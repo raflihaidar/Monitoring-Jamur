@@ -60,7 +60,7 @@ const data = ref({
 const fetchChartData = async () => {
   try {
     const res = await axios.get(
-      "http://localhost:8000/api/data/chart-data"
+      "http://localhost:5000/api/data/chart-data"
     )
 
     labels.value = res.data.data.labels

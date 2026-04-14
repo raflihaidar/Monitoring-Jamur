@@ -17,7 +17,7 @@ const data = reactive({
 })
 
 onMounted(async () => {
-  const response = await axios.get('http://localhost:8000/api/data/last-data')
+  const response = await axios.get('http://localhost:5000/api/data/last-data')
 
   const {temperature, humidity, soil, fan, pump, humidifier} = response.data.data
 
