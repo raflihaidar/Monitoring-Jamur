@@ -50,6 +50,8 @@ const resolveActuators = (
 
 // ============================================================
 // Generate Data Per Hari
+// Interval : 5 detik
+// Total slot per hari : 86400 / 5 = 17280
 // ============================================================
 
 const generateDayRecords = (dateStr) => {
@@ -70,15 +72,16 @@ const generateDayRecords = (dateStr) => {
 
   let lastSoil = randInt(1800, 2600)
 
-  const INTERVAL_MINUTES = 5
-  const TOTAL_SLOTS = (24 * 60) / INTERVAL_MINUTES
+  const INTERVAL_SECONDS = 5
+  const TOTAL_SLOTS = (24 * 60 * 60) / INTERVAL_SECONDS // 17280
 
   for (let slot = 0; slot < TOTAL_SLOTS; slot++) {
 
-    const totalMinutes = slot * INTERVAL_MINUTES
+    const totalSeconds = slot * INTERVAL_SECONDS
 
-    const hour = Math.floor(totalMinutes / 60)
-    const min = totalMinutes % 60
+    const hour = Math.floor(totalSeconds / 3600)
+    const min  = Math.floor((totalSeconds % 3600) / 60)
+    const sec  = totalSeconds % 60
 
     // ========================================================
     // Datetime UTC
@@ -86,12 +89,7 @@ const generateDayRecords = (dateStr) => {
 
     const dt = new Date(`${dateStr}T00:00:00.000Z`)
 
-    dt.setUTCHours(
-      hour,
-      min,
-      randInt(0, 59),
-      0
-    )
+    dt.setUTCHours(hour, min, sec, 0)
 
     // ========================================================
     // Window spike
@@ -100,14 +98,16 @@ const generateDayRecords = (dateStr) => {
     // ========================================================
 
     const utcHour = hour
+    const utcMin  = min
 
     const inWindow =
-      utcHour === 6 ||
-      utcHour === 7 ||
-      (utcHour === 8 && min === 0)
+      (utcHour === 6) ||
+      (utcHour === 7) ||
+      (utcHour === 8 && utcMin === 0 && sec === 0)
 
     // ========================================================
     // Trigger spike
+    // Probabilitas 30% per slot dalam window
     // ========================================================
 
     if (
@@ -250,8 +250,11 @@ const seed = async () => {
     )
   }
 
-  console.log(`📆 Total hari : ${dates.length}`)
-  console.log(`📦 Estimasi data : ${dates.length * 288}`)
+  const INTERVAL_SECONDS = 5
+  const SLOTS_PER_DAY = (24 * 60 * 60) / INTERVAL_SECONDS // 17280
+
+  console.log(`📆 Total hari     : ${dates.length}`)
+  console.log(`📦 Estimasi data  : ${dates.length * SLOTS_PER_DAY}`)
 
   // ==========================================================
   // Delete old data
@@ -269,7 +272,7 @@ const seed = async () => {
   console.log(`🗑 Deleted : ${deleted.count}`)
 
   // ==========================================================
-  // Insert
+  // Insert per hari
   // ==========================================================
 
   let totalInserted = 0
@@ -290,7 +293,7 @@ const seed = async () => {
     totalInserted += filtered.length
 
     process.stdout.write(
-      `\r✅ ${dateStr} -> ${filtered.length} | total ${totalInserted}`
+      `\r✅ ${dateStr} -> ${filtered.length} slot | total ${totalInserted}`
     )
   }
 
