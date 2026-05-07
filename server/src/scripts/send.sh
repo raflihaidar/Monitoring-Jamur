@@ -57,8 +57,8 @@ while true; do
     CURRENT_MIN=$((10#$(date +"%M")))
     CURRENT_TOTAL_MIN=$(( CURRENT_HOUR * 60 + CURRENT_MIN ))
 
-    WINDOW_START=$(( 15 * 60 ))   # 13:00
-    WINDOW_END=$(( 16 * 60 ))     # 15:00
+    WINDOW_START=$(( 13 * 60 ))   # 13:00
+    WINDOW_END=$(( 15 * 60 ))     # 15:00
     IN_WINDOW=0
     if [ "$CURRENT_TOTAL_MIN" -ge "$WINDOW_START" ] && [ "$CURRENT_TOTAL_MIN" -lt "$WINDOW_END" ]; then
         IN_WINDOW=1
