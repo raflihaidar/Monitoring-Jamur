@@ -38,7 +38,7 @@ const chartData = ref({
 // ✅ Fetch data awal dari API
 const fetchChartData = async () => {
   try {
-    const res = await axios.get(`${import.meta.env.VITE_BE_URL}/api/data/chart-data`)
+    const res = await axios.get(`${import.meta.env.VITE_BE_URL}/data/chart-data`)
     labels.value = res.data.data.labels
     chartData.value.temp = res.data.data.temp
     chartData.value.hum = res.data.data.hum

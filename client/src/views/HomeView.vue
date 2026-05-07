@@ -24,7 +24,7 @@ const monitoringHandler = (payload) => {
 
 onMounted(async () => {
   try {
-    const response = await axios.get(`${import.meta.env.VITE_BE_URL}/api/data/last-data`)
+    const response = await axios.get(`${import.meta.env.VITE_BE_URL}/data/last-data`)
     const { temperature, humidity, soil, fan, pump, humidifier } = response.data.data
     data.temperature = temperature
     data.humidity = humidity

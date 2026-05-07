@@ -27,7 +27,7 @@ const fetchHistory = async () => {
     if (dateFrom.value) params.dateFrom = dateFrom.value
     if (dateTo.value) params.dateTo = dateTo.value
 
-    const res = await axios.get(`${import.meta.env.VITE_BE_URL}/api/data/history`, { params })
+    const res = await axios.get(`${import.meta.env.VITE_BE_URL}/data/history`, { params })
     rows.value = res.data.data
     total.value = res.data.pagination.total
     totalPages.value = res.data.pagination.totalPages
