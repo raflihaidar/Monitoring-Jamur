@@ -1,7 +1,5 @@
 <script setup>
 import { ref, watch } from 'vue'
-import { useTimerStore } from '../stores/timer'
-
 const props = defineProps({
   width: {
     type: String,
@@ -19,7 +17,6 @@ const props = defineProps({
 
 const emit = defineEmits(["update:value"])
 
-const timerStore = useTimerStore()
 
 const isClick = ref(props.value === 'OFF' ? false : true)
 
@@ -35,11 +32,7 @@ watch(
 const toggle = async () => {
   isClick.value = !isClick.value
 
-  const state = isClick.value ? "ON" : "OFF"
-
   emit("update:value", isClick.value)
-
-  await timerStore.handlePump(state)
 }
 </script>
 

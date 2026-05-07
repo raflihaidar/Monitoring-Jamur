@@ -1,0 +1,206 @@
+// ============================================================
+// Seeder Data Dummy Jamur Kuping
+// Sesuai logika simulator bash:
+//   - Interval  : setiap 5 detik (per hari ~17.280 record → dipangkas jadi per 5 menit)
+//   - 13:00-15:00 (WIB / UTC+7 → 06:00-08:00 UTC) : window spike
+//   - Spike     : maks 2x per hari, acak ~30% per interval saat window
+//   - Tiap spike: 1 data naik (30-35°C) → 1 data turun (27-29°C) → normal
+//   - Normal    : 22-26°C
+//   - Humidity  : 80-90%
+//   - Soil      : 1800-2600
+//   - Pump/Fan/Humidifier: ON saat hot/low, OFF saat normal
+// ============================================================
+
+import { prisma } from "../../config/prisma.js"
+
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min
+
+const mappingState = (temperature, humidity, soil) => {
+  const temp_state =
+    temperature < 22 ? 'cold' : temperature <= 25 ? 'normal' : 'hot'
+
+  const hum_state =
+    humidity < 80 ? 'low' : humidity <= 90 ? 'normal' : 'high'
+
+  // soil: nilai tinggi = kering (low), nilai rendah = basah (high)
+  const soil_state =
+    soil > 2600 ? 'low' : soil > 1800 ? 'normal' : 'high'
+
+  return { temp_state, hum_state, soil_state }
+}
+
+/**
+ * Tentukan status aktuator berdasarkan kondisi sensor
+ * - Pump ON  : soil_state === 'low'  (tanah terlalu kering)
+ * - Fan ON   : temp_state === 'hot'
+ * - Humidifier ON : hum_state === 'low'
+ */
+const resolveActuators = (temp_state, hum_state, soil_state) => ({
+  pump:       soil_state === 'low'  ? 'ON' : 'OFF',
+  fan:        temp_state === 'hot'  ? 'ON' : 'OFF',
+  humidifier: hum_state  === 'low'  ? 'ON' : 'OFF',
+})
+
+// ── Generate records untuk 1 hari ────────────────────────────────────────────
+
+/**
+ * Buat semua record untuk satu hari tertentu.
+ * Interval per 5 menit → 288 record/hari (cukup representatif, tidak terlalu besar)
+ */
+const generateDayRecords = (dateStr) => {
+  const records = []
+
+  // State spike — reset tiap hari
+  let spikeCount  = 0   // sudah berapa spike terjadi
+  let spikeActive = false
+  let spikeStep   = 0   // 1=naik, 2=turun, 3=selesai
+
+  // Interval: setiap 5 menit = 288 slot per hari
+  const INTERVAL_MINUTES = 5
+  const TOTAL_SLOTS = (24 * 60) / INTERVAL_MINUTES // 288
+
+  for (let slot = 0; slot < TOTAL_SLOTS; slot++) {
+    const totalMinutes = slot * INTERVAL_MINUTES
+    const hour = Math.floor(totalMinutes / 60)
+    const min  = totalMinutes % 60
+
+    // Waktu UTC (WIB = UTC+7, window jam 13-15 WIB = 06-08 UTC)
+    const dt = new Date(`${dateStr}T00:00:00.000Z`)
+    dt.setUTCHours(hour, min, randInt(0, 59), 0)
+
+    // ── Apakah dalam window spike? (06:00–08:00 UTC = 13:00–15:00 WIB) ──
+    const utcHour = hour
+    const inWindow =
+      (utcHour === 6) ||
+      (utcHour === 7) ||
+      (utcHour === 8 && min === 0)
+
+    // ── Trigger spike baru ──
+    if (inWindow && !spikeActive && spikeCount < 2) {
+      const roll = Math.random()
+      if (roll < 0.30) {  // ~30% per interval
+        spikeActive = true
+        spikeStep   = 1
+        spikeCount++
+      }
+    }
+
+    // ── Hitung suhu ──
+    let temperature
+
+    if (spikeActive) {
+      if (spikeStep === 1) {
+        temperature = randInt(30, 35)       // naik
+      } else if (spikeStep === 2) {
+        temperature = randInt(27, 29)       // turun
+      } else {
+        spikeActive = false
+        spikeStep   = 0
+        temperature = randInt(22, 26)       // normal kembali
+      }
+      spikeStep++
+    } else {
+      temperature = randInt(22, 26)         // normal
+    }
+
+    const humidity = randInt(80, 90)
+    const soil     = randInt(1800, 2600)
+
+    const { temp_state, hum_state, soil_state } = mappingState(temperature, humidity, soil)
+    const { pump, fan, humidifier }             = resolveActuators(temp_state, hum_state, soil_state)
+
+    records.push({
+      date:        dt,
+      temperature,
+      humidity,
+      soil,
+      pump,
+      fan,
+      humidifier,
+    })
+  }
+
+  return records
+}
+
+// ── Main seeder ───────────────────────────────────────────────────────────────
+
+const seed = async () => {
+  const START_DATE = new Date('2026-04-05T00:00:00.000Z')
+  const END_DATE   = new Date() // hari ini
+
+  console.log('🌱 Mulai seeding data dummy Jamur Kuping...')
+  console.log(`   Periode : ${START_DATE.toISOString().slice(0,10)} s/d ${END_DATE.toISOString().slice(0,10)}`)
+  console.log(`   Interval: setiap 5 menit → ±288 record/hari\n`)
+
+  // Hitung daftar tanggal
+  const dates = []
+  const cursor = new Date(START_DATE)
+  while (cursor <= END_DATE) {
+    dates.push(cursor.toISOString().slice(0, 10))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+
+  console.log(`   Total hari : ${dates.length}`)
+  console.log(`   Estimasi record : ~${dates.length * 288}\n`)
+
+  // Hapus data lama di rentang ini (opsional, comment jika tidak mau)
+  const deleted = await prisma.data.deleteMany({
+    where: {
+      date: {
+        gte: START_DATE,
+        lte: END_DATE,
+      },
+    },
+  })
+  console.log(`🗑  Data lama dihapus: ${deleted.count} record`)
+
+  // Insert per hari dengan createMany (batch)
+  let totalInserted = 0
+
+  for (const dateStr of dates) {
+    const records = generateDayRecords(dateStr)
+
+    // Filter record yang melebihi hari ini (hari terakhir mungkin belum penuh)
+    const filtered = records.filter(r => r.date <= END_DATE)
+
+    await prisma.data.createMany({ data: filtered })
+    totalInserted += filtered.length
+
+    process.stdout.write(`\r   ✅ ${dateStr} — ${filtered.length} record (total: ${totalInserted})`)
+  }
+
+  console.log(`\n\n🎉 Seeding selesai! Total record: ${totalInserted}`)
+
+  // ── Statistik singkat ──
+  const stats = await prisma.$queryRaw`
+    SELECT
+      COUNT(*)                                          AS total,
+      ROUND(AVG(temperature), 1)                        AS avg_temp,
+      MIN(temperature)                                  AS min_temp,
+      MAX(temperature)                                  AS max_temp,
+      SUM(CASE WHEN temperature > 25 THEN 1 ELSE 0 END) AS spike_count
+    FROM \`data\`
+    WHERE date >= ${START_DATE} AND date <= ${END_DATE}
+  `
+
+  const s = stats[0]
+  console.log('\n📊 Statistik:')
+  console.log(`   Total record : ${s.total}`)
+  console.log(`   Avg suhu     : ${s.avg_temp}°C`)
+  console.log(`   Min suhu     : ${s.min_temp}°C`)
+  console.log(`   Max suhu     : ${s.max_temp}°C`)
+  console.log(`   Data spike   : ${s.spike_count} record (suhu > 25°C)`)
+}
+
+seed()
+  .catch((e) => {
+    console.error('❌ Error saat seeding:', e)
+    process.exit(1)
+  })
+  .finally(async () => {
+    await prisma.$disconnect()
+  })

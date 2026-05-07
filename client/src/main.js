@@ -12,7 +12,7 @@ const pinia = createPinia()
 const app = createApp(App)
 
 app.use(VueApexCharts)
-app.component('apexchart', VueApexCharts) // 🔥 INI YANG KURANG
+app.component('apexchart', VueApexCharts)
 
 app.use(pinia)
 pinia.use(piniaPluginPersistedstate)

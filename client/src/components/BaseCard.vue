@@ -21,7 +21,7 @@ defineProps({
 
 <template>
   <section
-    class="bg-white w-full h-[80px] flex flex-col justify-center items-center shadow-sm rounded-2xl"
+    class="bg-white w-full h-20 flex flex-col justify-center items-center shadow-sm rounded-2xl"
   >
     <h3 class="text-lg font-semibold" :style="{ color: colorValue }">
       {{ value }}

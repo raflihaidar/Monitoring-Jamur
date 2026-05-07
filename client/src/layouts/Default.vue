@@ -1,10 +1,12 @@
 <template>
   <div class="flex min-h-screen bg-[#f5f7fb] p-4 gap-4">
     <aside class="w-64 bg-white rounded-2xl p-5 shadow-sm">
-      <h2 class="font-semibold mb-4">WongPonik</h2>
+      <!-- <h2 class="font-semibold mb-4">WongPonik</h2> -->
+
+      <img src="../assets//images/icon.png" alt="">
 
       <!-- Menu -->
-      <ul class="space-y-3 text-sm">
+      <ul class="space-y-3 text-sm mt-5">
         <li>
           <RouterLink
             to="/"

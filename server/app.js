@@ -5,7 +5,7 @@ import mqtt from 'mqtt'
 import cors from 'cors'
 import http from "http";
 import { options } from './src/config/mqtt.js'
-import { saveData, getChartData } from './src/services/data.service.js' 
+import { saveData, getChartData, mappingSensorValue } from './src/services/data.service.js' 
 import dataRoutes from './src/routes/data.route.js'
 import { Server } from "socket.io";
 
@@ -37,7 +37,7 @@ io.on("connection", (socket) => {
 const mqttClient = mqtt.connect(options)
 
 app.use(cors({
-  origin : "*"
+  origin : process.env.FE_URL
 }))
 app.use(express.json())
 app.use('/api/data', dataRoutes)
@@ -80,11 +80,22 @@ mqttClient.on('message', async (topic, message) => {
       soil = data.soil
       humidity = data.humidity
 
-      const payload = {
+      let payload = {
         temperature,
         soil,
         humidity
       }
+
+      const {temp_state, soil_state, hum_state} = mappingSensorValue(temperature, humidity, soil)
+
+      payload = {
+        ...payload,
+        temp_state,
+        soil_state,
+        hum_state
+      }
+
+      console.log("payload : ", payload)
 
       await saveData(payload)
       io.emit("monitoring", payload);
