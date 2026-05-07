@@ -144,7 +144,7 @@ onMounted(fetchHistory)
         </button>
         <!-- tambahkan di filter bar, setelah tombol Reset -->
         <a
-          :href="`${VITE_BE_URL}/api/data/export${exportQuery}`"
+          :href="`${VITE_BE_URL}/data/export${exportQuery}`"
           target="_blank"
           class="px-4 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-sm rounded-lg transition font-medium
           flex items-center gap-1.5"
