@@ -1,7 +1,4 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// schema.prisma
 
 generator client {
   provider = "prisma-client"
@@ -13,19 +10,47 @@ datasource db {
 }
 
 enum ActuatorStatus {
-  ON
-  OFF
+  VERYLOW
+  LOW
+  NORMAL
+  HIGH
+  VERYHIGH
+}
+
+enum ActuatorType {
+  pump
+  fan
+  humidifier
+}
+
+enum Mode {
+  Fuzzy
+  Timer
+  Manual
 }
 
 model Data {
-  id          String         @id @default(uuid())
-  date        DateTime
-  temperature Float
-  humidity    Float
-  soil        Float
-  pump        ActuatorStatus
-  fan         ActuatorStatus
-  humidifier  ActuatorStatus
+  id           String         @id @default(uuid())
+  date         DateTime
+  temperature  Float
+  humidity     Float
+  soil         Float
+  pump         ActuatorStatus
+  fan          ActuatorStatus
+  humidifier   ActuatorStatus
+  actuatorLogs ActuatorLog[]
 
   @@map("data")
+}
+
+model ActuatorLog {
+  id     String         @id @default(uuid())
+  date   DateTime       @default(now())
+  type   ActuatorType
+  status ActuatorStatus
+  mode   Mode
+  dataId String?
+  data   Data?          @relation(fields: [dataId], references: [id])
+
+  @@map("actuator_log")
 }

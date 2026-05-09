@@ -2,6 +2,9 @@ import "dotenv/config";
 import { PrismaClient } from "../generated/prisma/client.ts";
 import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 
-const adapter = new PrismaMariaDb(process.env.DATABASE_URL);
+const connectionString = new URL(process.env.DATABASE_URL);
+connectionString.searchParams.set("allowPublicKeyRetrieval", "true");
 
-export const prisma = new PrismaClient({adapter});
+const adapter = new PrismaMariaDb(connectionString.toString());
+
+export const prisma = new PrismaClient({ adapter });

@@ -5,7 +5,7 @@ import mqtt from 'mqtt'
 import cors from 'cors'
 import http from "http";
 import { options } from './src/config/mqtt.js'
-import { saveData, getChartData, mappingSensorValue } from './src/services/data.service.js' 
+import { saveData, getChartData, mappingSensorValue, saveActuatorControl } from './src/services/data.service.js'
 import dataRoutes from './src/routes/data.route.js'
 import { Server } from "socket.io";
 
@@ -37,7 +37,7 @@ io.on("connection", (socket) => {
 const mqttClient = mqtt.connect(options)
 
 app.use(cors({
-  origin : process.env.FE_URL
+  origin: process.env.FE_URL
 }))
 app.use(express.json())
 app.use('/api/data', dataRoutes)
@@ -86,7 +86,7 @@ mqttClient.on('message', async (topic, message) => {
         humidity
       }
 
-      const {temp_state, soil_state, hum_state} = mappingSensorValue(temperature, humidity, soil)
+      const { temp_state, soil_state, hum_state } = mappingSensorValue(temperature, humidity, soil)
 
       payload = {
         ...payload,
@@ -106,12 +106,27 @@ mqttClient.on('message', async (topic, message) => {
       console.error('Failed to parse JSON message:', error)
     }
   }
-
   if (topic === topic_pump || topic === topic_fan || topic === topic_diffuser) {
     try {
-      console.log(message.toString())
+      const payload = JSON.parse(message.toString())
+
+      const type =
+        topic === topic_pump ? "pump" :
+          topic === topic_fan ? "fan" :
+            "diffuser"
+
+      console.log(`[Control] ${type} → ${payload.status}`)
+
+      await saveActuatorControl(type, payload.status, 'Timer')
+
+      io.emit("actuator_control", {
+        type,
+        status: payload.status,
+        date: new Date(),
+      })
+
     } catch (err) {
-      console.log(err)
+      console.error(`[Control] Failed to parse:`, err)
     }
   }
 })
@@ -151,23 +166,6 @@ app.post('/api/relay', (req, res) => {
     })
   }
 })
-
-// Express route to publish MQTT messages for PH sensor
-// app.post('/publish/ph', (req, res) => {
-//   const { ph } = req.body
-//   if (ph !== undefined) {
-//     mqttClient.publish('esp32/sensor/ph', JSON.stringify({ ph }))
-//     res.json({
-//       statusCode: 200,
-//       message: `Message with pH value "${ph}" published to esp32/sensor/ph`,
-//     })
-//   } else {
-//     res.status(400).json({
-//       statusCode: 400,
-//       message: 'pH value is required.',
-//     })
-//   }
-// })
 
 server.listen(port, () => {
   console.log(`Aeroponic app listening on port ${port}`)
