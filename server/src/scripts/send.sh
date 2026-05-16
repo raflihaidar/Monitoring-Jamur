@@ -103,13 +103,19 @@ while true; do
     # Penyiraman otomatis jam 07:00 (durasi 15 detik = 3 slot)
     # ========================================================
 
-    WATERING_SLOTS=3
+    WATERING_SLOTS=2
 
     if [ "$CURRENT_HOUR" -eq 7 ] && [ "$CURRENT_MIN" -eq 0 ] && [ "$WATERING_DONE_TODAY" -eq 0 ]; then
         WATERING_ACTIVE=$WATERING_SLOTS
         WATERING_DONE_TODAY=1
         echo "[INFO] 💧 PENYIRAMAN OTOMATIS JAM 07:00 DIMULAI (15 detik)"
     fi
+
+    # if [ "$CURRENT_HOUR" -eq 20 ] && [ "$CURRENT_MIN" -eq 51 ] && [ "$WATERING_DONE_TODAY" -eq 0 ]; then
+    # WATERING_ACTIVE=$WATERING_SLOTS
+    # WATERING_DONE_TODAY=1
+    # echo "[INFO] 💧 PENYIRAMAN OTOMATIS JAM 20:51 DIMULAI (10 detik)"
+    # fi
 
     # ========================================================
     # Trigger spike

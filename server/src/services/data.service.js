@@ -2,7 +2,7 @@ import { prisma } from "../config/prisma.js";
 import ExcelJS from 'exceljs'
 
 // ─────────────────────────────────────────────────────────────
-// MAPPING & FUZZY (tidak diubah)
+// MAPPING & FUZZY
 // ─────────────────────────────────────────────────────────────
 
 export const mappingSensorValue = (temperature, humidity, soil) => {
@@ -50,23 +50,42 @@ const fuzzyRule = (soil_state, temp_state, hum_state) => {
 
 export const saveData = async (payload) => {
   const actuator = fuzzyRule(payload.soil_state, payload.temp_state, payload.hum_state)
+
+  // Cek lock per aktuator
+  const locks = await prisma.actuatorLock.findMany({
+    where: { type: { in: ['pump', 'fan', 'humidifier'] } }
+  })
+  const lockMap = Object.fromEntries(locks.map(l => [l.type, l.locked]))
+
+  // Ambil status aktuator terbaru untuk yang sedang terkunci
+  const [latestPump, latestFan, latestHumidifier] = await Promise.all([
+    lockMap['pump']       ? prisma.actuatorLog.findFirst({ where: { type: 'pump' },       orderBy: { date: 'desc' } }) : null,
+    lockMap['fan']        ? prisma.actuatorLog.findFirst({ where: { type: 'fan' },        orderBy: { date: 'desc' } }) : null,
+    lockMap['humidifier'] ? prisma.actuatorLog.findFirst({ where: { type: 'humidifier' }, orderBy: { date: 'desc' } }) : null,
+  ])
+
+  // Kalau locked, pakai status terakhir. Kalau tidak, pakai hasil fuzzy
+  const finalPump       = lockMap['pump']       ? latestPump?.status       : actuator.pump
+  const finalFan        = lockMap['fan']        ? latestFan?.status        : actuator.fan
+  const finalHumidifier = lockMap['humidifier'] ? latestHumidifier?.status : actuator.humidifier
+
   const data = await prisma.data.create({
     data: {
       temperature: payload.temperature,
       humidity:    payload.humidity,
       soil:        payload.soil,
-      pump:        actuator.pump,
-      fan:         actuator.fan,
-      humidifier:  actuator.humidifier,
+      pump:        finalPump,
+      fan:         finalFan,
+      humidifier:  finalHumidifier,
       date:        new Date(),
     }
   })
 
   await prisma.actuatorLog.createMany({
     data: [
-      { type: 'pump',       status: actuator.pump,       mode: 'Fuzzy', dataId: data.id },
-      { type: 'fan',        status: actuator.fan,        mode: 'Fuzzy', dataId: data.id },
-      { type: 'humidifier', status: actuator.humidifier, mode: 'Fuzzy', dataId: data.id },
+      { type: 'pump',       status: finalPump,       mode: lockMap['pump']       ? 'Manual' : 'Fuzzy', dataId: data.id },
+      { type: 'fan',        status: finalFan,        mode: lockMap['fan']        ? 'Manual' : 'Fuzzy', dataId: data.id },
+      { type: 'humidifier', status: finalHumidifier, mode: lockMap['humidifier'] ? 'Manual' : 'Fuzzy', dataId: data.id },
     ]
   })
 
@@ -80,7 +99,7 @@ export const saveData = async (payload) => {
 export const saveActuatorControl = async (type, status, mode = 'Manual') => {
   try {
     const validStatus = ["VERYLOW", "LOW", "NORMAL", "HIGH", "VERYHIGH"]
-    const normalized = status?.toUpperCase()
+    const normalized  = status?.toUpperCase()
 
     if (!validStatus.includes(normalized)) {
       throw new Error(`Invalid ActuatorStatus: ${status}`)
@@ -111,6 +130,19 @@ export const saveActuatorControl = async (type, status, mode = 'Manual') => {
 }
 
 // ─────────────────────────────────────────────────────────────
+// UNLOCK ACTUATOR
+// ─────────────────────────────────────────────────────────────
+
+export const unlockActuator = async (type) => {
+  const normalizedType = type?.toLowerCase()
+  await prisma.actuatorLock.upsert({
+    where:  { type: normalizedType },
+    update: { locked: false },
+    create: { type: normalizedType, locked: false },
+  })
+}
+
+// ─────────────────────────────────────────────────────────────
 // CONTROL ACTUATOR MANUAL
 // ─────────────────────────────────────────────────────────────
 
@@ -120,7 +152,6 @@ export const controlActuator = async (type, status) => {
   const normalizedType   = type?.toLowerCase()
   const normalizedStatus = status?.toUpperCase()
 
-  // Validasi type & status
   if (!validTypes.includes(normalizedType)) {
     throw new Error(`Invalid ActuatorType: "${type}". Harus salah satu dari: ${validTypes.join(", ")}`)
   }
@@ -130,26 +161,54 @@ export const controlActuator = async (type, status) => {
 
   // Ambil data sensor terbaru sebagai referensi
   const latest = await prisma.data.findFirst({ orderBy: { date: "desc" } })
-  if (!latest) throw new Error("Tidak ada data sensor yang tersedia untuk dikontrol")
 
-  // Jalankan update Data + insert ActuatorLog dalam satu transaksi
-  const [log] = await prisma.$transaction([
-    // prisma.data.update({
-    //   where: { id: latest.id },
-    //   data:  { [normalizedType]: normalizedStatus },
-    // }),
+  // Ambil status aktuator terbaru untuk masing-masing type
+  const [latestPump, latestFan, latestHumidifier] = await Promise.all([
+    prisma.actuatorLog.findFirst({ where: { type: 'pump' },       orderBy: { date: 'desc' } }),
+    prisma.actuatorLog.findFirst({ where: { type: 'fan' },        orderBy: { date: 'desc' } }),
+    prisma.actuatorLog.findFirst({ where: { type: 'humidifier' }, orderBy: { date: 'desc' } }),
+  ])
 
-    prisma.actuatorLog.create({
+  // Susun nilai aktuator: override type yang dikontrol, sisanya pakai status terbaru
+  const actuatorValues = {
+    pump:       normalizedType === 'pump'       ? normalizedStatus : (latestPump?.status       ?? latest?.pump       ?? 'VERYLOW'),
+    fan:        normalizedType === 'fan'        ? normalizedStatus : (latestFan?.status        ?? latest?.fan        ?? 'VERYLOW'),
+    humidifier: normalizedType === 'humidifier' ? normalizedStatus : (latestHumidifier?.status ?? latest?.humidifier ?? 'VERYLOW'),
+  }
+
+  // Buat record Data baru + ActuatorLog + set lock dalam satu transaksi
+  const [newData, log] = await prisma.$transaction(async (tx) => {
+    await tx.actuatorLock.upsert({
+      where:  { type: normalizedType },
+      update: { locked: true },
+      create: { type: normalizedType, locked: true },
+    })
+
+    const newData = await tx.data.create({
+      data: {
+        temperature: latest?.temperature ?? 0,
+        humidity:    latest?.humidity    ?? 0,
+        soil:        latest?.soil        ?? 0,
+        pump:        actuatorValues.pump,
+        fan:         actuatorValues.fan,
+        humidifier:  actuatorValues.humidifier,
+        date:        new Date(),
+      }
+    })
+
+    const log = await tx.actuatorLog.create({
       data: {
         type:   normalizedType,
         status: normalizedStatus,
         mode:   "Manual",
-        dataId: latest.id,
-      },
-    }),
-  ])
+        dataId: newData.id,
+      }
+    })
 
-  return { log }
+    return [newData, log]
+  })
+
+  return { newData, log }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -218,12 +277,24 @@ export const getHistoryData = async ({ page = 1, limit = 20, dateFrom, dateTo } 
       orderBy: { date: 'desc' },
       skip,
       take: limit,
+      include: {
+        actuatorLogs: {
+          where:   { type: 'pump' },
+          orderBy: { date: 'desc' },
+          take: 1,
+        }
+      }
     }),
     prisma.data.count({ where }),
   ])
 
+  const data = rows.map(row => ({
+    ...row,
+    mode: row.actuatorLogs[0]?.mode ?? '-',
+  }))
+
   return {
-    data: rows,
+    data,
     pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
   }
 }
@@ -233,8 +304,8 @@ export const getHistoryData = async ({ page = 1, limit = 20, dateFrom, dateTo } 
 // ─────────────────────────────────────────────────────────────
 
 export const getActuatorLogHistory = async ({
-  page   = 1,
-  limit  = 20,
+  page     = 1,
+  limit    = 20,
   type,
   mode,
   dateFrom,
@@ -271,7 +342,7 @@ export const getActuatorLogHistory = async ({
 }
 
 // ─────────────────────────────────────────────────────────────
-// EXPORT EXCEL (2 sheet: Sensor + Aktuator Log)
+// EXPORT EXCEL — streaming per batch agar tidak OOM
 // ─────────────────────────────────────────────────────────────
 
 export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
@@ -279,25 +350,19 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
   const actWhere = {}
   if (where.date) actWhere.date = where.date
 
-  const [sensorRows, actRows] = await Promise.all([
-    prisma.data.findMany({ where, orderBy: { date: 'desc' } }),
-    prisma.actuatorLog.findMany({
-      where:   actWhere,
-      orderBy: { date: 'desc' },
-      include: { data: { select: { temperature: true, humidity: true, soil: true } } }
-    }),
-  ])
+  const fileName = `history_jamur_${Date.now()}.xlsx`
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
 
-  const workbook       = new ExcelJS.Workbook()
-  workbook.creator     = 'Sistem Monitoring Jamur Kuping'
-  workbook.created     = new Date()
+  // Gunakan WorkbookWriter (streaming) agar tiap row langsung dikirim ke client
+  const workbook   = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res })
+  workbook.creator = 'Sistem Monitoring Jamur Kuping'
+  workbook.created = new Date()
 
   // ── Sheet 1: Data Sensor ──────────────────────────────────
   const sheetSensor = workbook.addWorksheet('Data Sensor', {
     pageSetup: { fitToPage: true, orientation: 'landscape' },
   })
-
-  addSheetTitle(sheetSensor, 'RIWAYAT DATA SENSOR JAMUR KUPING', 'A1:H1', dateFrom, dateTo, 'A2:H2')
 
   sheetSensor.columns = [
     { key: 'no',          width: 6  },
@@ -310,31 +375,47 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
     { key: 'humidifier',  width: 14 },
   ]
 
-  const sensorHeader = sheetSensor.addRow([
-    'No', 'Waktu', 'Suhu (°C)', 'Kelembapan (%)', 'Substrat', 'Pump', 'Fan', 'Humidifier'
-  ])
-  styleHeader(sensorHeader, '2D6A4F')
+  addSheetTitleStream(sheetSensor, 'RIWAYAT DATA SENSOR JAMUR KUPING', dateFrom, dateTo)
+  styleHeaderStream(sheetSensor.addRow(['No', 'Waktu', 'Suhu (°C)', 'Kelembapan (%)', 'Substrat', 'Pump', 'Fan', 'Humidifier']), '2D6A4F')
 
-  sensorRows.forEach((row, idx) => {
-    const dr = sheetSensor.addRow({
-      no:          idx + 1,
-      date:        fmtDate(row.date),
-      temperature: +row.temperature.toFixed(1),
-      humidity:    +row.humidity.toFixed(1),
-      soil:        Math.round(row.soil),
-      pump:        row.pump,
-      fan:         row.fan,
-      humidifier:  row.humidifier,
+  const BATCH = 1000
+  let skip = 0
+  let idx  = 0
+
+  while (true) {
+    const rows = await prisma.data.findMany({
+      where,
+      orderBy: { date: 'desc' },
+      skip,
+      take: BATCH,
     })
-    styleDataRow(dr, idx, row)
-  })
+    if (rows.length === 0) break
+
+    for (const row of rows) {
+      const dr = sheetSensor.addRow({
+        no:          ++idx,
+        date:        fmtDate(row.date),
+        temperature: +row.temperature.toFixed(1),
+        humidity:    +row.humidity.toFixed(1),
+        soil:        Math.round(row.soil),
+        pump:        row.pump,
+        fan:         row.fan,
+        humidifier:  row.humidifier,
+      })
+      styleDataRowStream(dr, idx, row)
+      dr.commit()
+    }
+
+    skip += BATCH
+    if (rows.length < BATCH) break
+  }
+
+  await sheetSensor.commit()
 
   // ── Sheet 2: Aktuator Log ────────────────────────────────
   const sheetAct = workbook.addWorksheet('Log Aktuator', {
     pageSetup: { fitToPage: true, orientation: 'landscape' },
   })
-
-  addSheetTitle(sheetAct, 'LOG AKTUATOR JAMUR KUPING', 'A1:G1', dateFrom, dateTo, 'A2:G2')
 
   sheetAct.columns = [
     { key: 'no',     width: 6  },
@@ -346,46 +427,58 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
     { key: 'hum',    width: 14 },
   ]
 
-  const actHeader = sheetAct.addRow([
-    'No', 'Waktu', 'Aktuator', 'Status', 'Mode', 'Suhu (°C)', 'Kelembapan (%)'
-  ])
-  styleHeader(actHeader, '1B4F72')
+  addSheetTitleStream(sheetAct, 'LOG AKTUATOR JAMUR KUPING', dateFrom, dateTo)
+  styleHeaderStream(sheetAct.addRow(['No', 'Waktu', 'Aktuator', 'Status', 'Mode', 'Suhu (°C)', 'Kelembapan (%)']), '1B4F72')
 
-  actRows.forEach((row, idx) => {
-    const dr = sheetAct.addRow({
-      no:     idx + 1,
-      date:   fmtDate(row.date),
-      type:   row.type,
-      status: row.status,
-      mode:   row.mode,
-      temp:   row.data ? +row.data.temperature.toFixed(1) : '-',
-      hum:    row.data ? +row.data.humidity.toFixed(1)    : '-',
-    })
+  skip = 0
+  idx  = 0
 
-    const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFEBf5FB'
-    dr.eachCell((cell, col) => {
-      cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } }
-      cell.alignment = { horizontal: 'center', vertical: 'middle' }
-      cell.border    = { bottom: { style: 'hair', color: { argb: 'FFD1ECF1' } } }
-
-      if (col === 5) {
-        const modeColor = row.mode === 'Manual' ? 'FF854F0B' : row.mode === 'Timer' ? 'FF534AB7' : 'FF0C447C'
-        cell.font = { bold: true, color: { argb: modeColor }, size: 10 }
-      }
-      if (col === 4) {
-        const sc = actuatorStatusColor(row.status)
-        cell.font = { bold: true, color: { argb: sc }, size: 10 }
+  while (true) {
+    const rows = await prisma.actuatorLog.findMany({
+      where:   actWhere,
+      orderBy: { date: 'desc' },
+      skip,
+      take: BATCH,
+      include: {
+        data: { select: { temperature: true, humidity: true } }
       }
     })
-    dr.height = 20
-  })
+    if (rows.length === 0) break
 
-  // ── Stream ────────────────────────────────────────────────
-  const fileName = `history_jamur_${Date.now()}.xlsx`
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
-  await workbook.xlsx.write(res)
-  res.end()
+    for (const row of rows) {
+      const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFEBf5FB'
+      const dr = sheetAct.addRow({
+        no:     ++idx,
+        date:   fmtDate(row.date),
+        type:   row.type,
+        status: row.status,
+        mode:   row.mode,
+        temp:   row.data ? +row.data.temperature.toFixed(1) : '-',
+        hum:    row.data ? +row.data.humidity.toFixed(1)    : '-',
+      })
+
+      dr.eachCell((cell, col) => {
+        cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } }
+        cell.alignment = { horizontal: 'center', vertical: 'middle' }
+        cell.border    = { bottom: { style: 'hair', color: { argb: 'FFD1ECF1' } } }
+        if (col === 4) {
+          cell.font = { bold: true, color: { argb: actuatorStatusColor(row.status) }, size: 10 }
+        }
+        if (col === 5) {
+          const modeColor = row.mode === 'Manual' ? 'FF854F0B' : row.mode === 'Timer' ? 'FF534AB7' : 'FF0C447C'
+          cell.font = { bold: true, color: { argb: modeColor }, size: 10 }
+        }
+      })
+
+      dr.commit()
+    }
+
+    skip += BATCH
+    if (rows.length < BATCH) break
+  }
+
+  await sheetAct.commit()
+  await workbook.commit()
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -396,15 +489,22 @@ const buildDateWhere = (dateFrom, dateTo) => {
   const where = {}
   if (dateFrom || dateTo) {
     where.date = {}
-    if (dateFrom) where.date.gte = new Date(dateFrom)
+    if (dateFrom) {
+      const start = new Date(dateFrom)
+      start.setUTCHours(0, 0, 0, 0)
+      start.setTime(start.getTime() - (7 * 60 * 60 * 1000)) // mundur 7 jam → 17:00 UTC hari sebelumnya = 00:00 WIB
+      where.date.gte = start
+    }
     if (dateTo) {
       const end = new Date(dateTo)
-      end.setHours(23, 59, 59, 999)
+      end.setUTCHours(0, 0, 0, 0)
+      end.setTime(end.getTime() + (17 * 60 * 60 * 1000) - 1) // +17 jam → 16:59:59 UTC = 23:59:59 WIB
       where.date.lte = end
     }
   }
   return where
 }
+
 
 const fmtDate = (d) =>
   new Date(d).toLocaleString('id-ID', {
@@ -412,47 +512,52 @@ const fmtDate = (d) =>
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
 
-const addSheetTitle = (sheet, title, mergeCells1, dateFrom, dateTo, mergeCells2) => {
-  sheet.mergeCells(mergeCells1)
-  sheet.getCell(mergeCells1.split(':')[0]).value     = title
-  sheet.getCell(mergeCells1.split(':')[0]).font      = { bold: true, size: 14 }
-  sheet.getCell(mergeCells1.split(':')[0]).alignment = { horizontal: 'center' }
+// Helper untuk streaming worksheet (tidak bisa mergeCells di streaming mode)
+const addSheetTitleStream = (sheet, title, dateFrom, dateTo) => {
+  const titleRow       = sheet.addRow([title])
+  titleRow.font        = { bold: true, size: 14 }
+  titleRow.alignment   = { horizontal: 'center' }
+  titleRow.commit()
 
-  sheet.mergeCells(mergeCells2)
-  const rangeLabel = dateFrom || dateTo
+  const rangeLabel     = dateFrom || dateTo
     ? `Periode: ${dateFrom || '-'} s/d ${dateTo || '-'}`
     : 'Periode: Semua Data'
-  sheet.getCell(mergeCells2.split(':')[0]).value     = rangeLabel
-  sheet.getCell(mergeCells2.split(':')[0]).font      = { size: 10, color: { argb: 'FF888888' } }
-  sheet.getCell(mergeCells2.split(':')[0]).alignment = { horizontal: 'center' }
-  sheet.addRow([])
+  const subRow         = sheet.addRow([rangeLabel])
+  subRow.font          = { size: 10, color: { argb: 'FF888888' } }
+  subRow.alignment     = { horizontal: 'center' }
+  subRow.commit()
+
+  sheet.addRow([]).commit()
 }
 
-const styleHeader = (row, colorHex) => {
+const styleHeaderStream = (row, colorHex) => {
   row.eachCell((cell) => {
     cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorHex } }
     cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 }
     cell.alignment = { horizontal: 'center', vertical: 'middle' }
     cell.border    = {
-      top: { style: 'thin' }, bottom: { style: 'thin' },
-      left: { style: 'thin' }, right: { style: 'thin' },
+      top:    { style: 'thin' },
+      bottom: { style: 'thin' },
+      left:   { style: 'thin' },
+      right:  { style: 'thin' },
     }
   })
   row.height = 24
+  row.commit()
 }
 
-const styleDataRow = (dataRow, idx, row) => {
+const styleDataRowStream = (dataRow, idx, row) => {
   const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF0FDF4'
   dataRow.eachCell((cell, col) => {
     cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } }
     cell.alignment = { horizontal: 'center', vertical: 'middle' }
     cell.border    = { bottom: { style: 'hair', color: { argb: 'FFD1FAE5' } } }
-    if (col === 3) cell.font = { bold: true, color: { argb: tempColor(row.temperature) },  size: 10 }
-    if (col === 4) cell.font = { bold: true, color: { argb: humColor(row.humidity) },       size: 10 }
-    if (col === 5) cell.font = { bold: true, color: { argb: soilColor(row.soil) },          size: 10 }
-    if (col === 6) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.pump) }, size: 10 }
-    if (col === 7) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.fan) },  size: 10 }
-    if (col === 8) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.humidifier) }, size: 10 }
+    if (col === 3) cell.font = { bold: true, color: { argb: tempColor(row.temperature) },          size: 10 }
+    if (col === 4) cell.font = { bold: true, color: { argb: humColor(row.humidity) },               size: 10 }
+    if (col === 5) cell.font = { bold: true, color: { argb: soilColor(row.soil) },                  size: 10 }
+    if (col === 6) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.pump) },        size: 10 }
+    if (col === 7) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.fan) },         size: 10 }
+    if (col === 8) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.humidifier) },  size: 10 }
   })
   dataRow.height = 20
 }
@@ -460,6 +565,7 @@ const styleDataRow = (dataRow, idx, row) => {
 const tempColor = (v) => v < 22 ? 'FF3B82F6' : v <= 25 ? 'FF16A34A' : 'FFEF4444'
 const humColor  = (v) => v < 80 ? 'FFF97316' : v <= 90 ? 'FF16A34A' : 'FF3B82F6'
 const soilColor = (v) => v > 2600 ? 'FFF97316' : v > 1800 ? 'FF16A34A' : 'FF3B82F6'
+
 const actuatorStatusColor = (v) => {
   const map = {
     VERYLOW:  'FF9CA3AF',

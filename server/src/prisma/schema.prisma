@@ -54,3 +54,11 @@ model ActuatorLog {
 
   @@map("actuator_log")
 }
+
+model ActuatorLock {
+  id        String   @id @default(uuid())
+  type      ActuatorType @unique
+  locked    Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+  @@map("actuator_lock")
+}
