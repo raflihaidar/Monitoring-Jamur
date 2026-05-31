@@ -4,10 +4,13 @@ import axios from 'axios'
 import DefaultLayout from '../layouts/Default.vue'
 import Pagination from '../components/Pagination.vue'
 
-const VITE_BE_URL = import.meta.env.VITE_BE_URL
+const VITE_BE_URL   = import.meta.env.VITE_BE_URL
+const LIMIT_OPTIONS = [15, 30, 50, 100]
+
+const STATUS_OPTIONS = ['VERYLOW', 'LOW', 'NORMAL', 'HIGH', 'VERYHIGH']
 
 // ── Active tab ─────────────────────────────────────────────
-const activeTab = ref('sensor') // 'sensor' | 'actuator'
+const activeTab = ref('sensor')
 
 // ── Shared filter ──────────────────────────────────────────
 const dateFrom = ref('')
@@ -16,101 +19,156 @@ const dateTo   = ref('')
 // ─────────────────────────────────────────────────────────
 // TAB SENSOR
 // ─────────────────────────────────────────────────────────
-const sensorRows    = ref([])
-const sensorLoading = ref(false)
-const sensorError   = ref(null)
-const sensorPage    = ref(1)
-const sensorTotal   = ref(0)
-const sensorTotalPages = ref(1)
-const LIMIT = 15
+const sensorRows        = ref([])
+const sensorLoading     = ref(false)
+const sensorError       = ref(null)
+const sensorLimit       = ref(15)
+const sensorCursors     = ref([null])
+const sensorPageIndex   = ref(0)
+const sensorNextCursor  = ref(null)
 
-const fetchSensor = async () => {
+// Filter status sensor — bisa filter pump / fan / humidifier per status
+const sensorPumpStatus  = ref('')
+const sensorFanStatus   = ref('')
+const sensorHumStatus   = ref('')
+
+const sensorHasPrev = computed(() => sensorPageIndex.value > 0)
+const sensorHasNext = computed(() => !!sensorNextCursor.value)
+
+const fetchSensor = async (cursor = null) => {
   sensorLoading.value = true
   sensorError.value   = null
   try {
-    const params = { page: sensorPage.value, limit: LIMIT }
-    if (dateFrom.value) params.dateFrom = dateFrom.value
-    if (dateTo.value)   params.dateTo   = dateTo.value
+    const params = { limit: sensorLimit.value }
+    if (cursor)                  params.cursor     = cursor
+    if (dateFrom.value)          params.dateFrom   = dateFrom.value
+    if (dateTo.value)            params.dateTo     = dateTo.value
+    if (sensorPumpStatus.value)  params.pump       = sensorPumpStatus.value
+    if (sensorFanStatus.value)   params.fan        = sensorFanStatus.value
+    if (sensorHumStatus.value)   params.humidifier = sensorHumStatus.value
     const res = await axios.get(`${VITE_BE_URL}/data/history`, { params })
     sensorRows.value       = res.data.data
-    sensorTotal.value      = res.data.pagination.total
-    sensorTotalPages.value = res.data.pagination.totalPages
-  } catch (e) {
+    sensorNextCursor.value = res.data.pagination.nextCursor
+  } catch {
     sensorError.value = 'Gagal memuat data sensor.'
   } finally {
     sensorLoading.value = false
   }
 }
 
+const sensorNext = () => {
+  if (!sensorNextCursor.value) return
+  sensorCursors.value.push(sensorNextCursor.value)
+  sensorPageIndex.value++
+  fetchSensor(sensorNextCursor.value)
+}
+
+const sensorPrev = () => {
+  if (sensorPageIndex.value === 0) return
+  sensorPageIndex.value--
+  sensorCursors.value.pop()
+  fetchSensor(sensorCursors.value[sensorPageIndex.value] ?? null)
+}
+
+const resetSensorCursor = () => {
+  sensorCursors.value    = [null]
+  sensorPageIndex.value  = 0
+  sensorNextCursor.value = null
+}
+
 // ─────────────────────────────────────────────────────────
 // TAB AKTUATOR LOG
 // ─────────────────────────────────────────────────────────
-const actRows      = ref([])
-const actLoading   = ref(false)
-const actError     = ref(null)
-const actPage      = ref(1)
-const actTotal     = ref(0)
-const actTotalPages = ref(1)
-const actTypeFilter = ref('')   // '' | 'pump' | 'fan' | 'humidifier'
-const actModeFilter = ref('')   // '' | 'Fuzzy' | 'Manual' | 'Timer'
+const actRows       = ref([])
+const actLoading    = ref(false)
+const actError      = ref(null)
+const actLimit      = ref(15)
+const actCursors    = ref([null])
+const actPageIndex  = ref(0)
+const actNextCursor = ref(null)
+const actTypeFilter = ref('')
+const actModeFilter = ref('')
+const actStatusFilter = ref('')   // ← filter status baru
 
-const fetchActuator = async () => {
+const actHasPrev = computed(() => actPageIndex.value > 0)
+const actHasNext = computed(() => !!actNextCursor.value)
+
+const fetchActuator = async (cursor = null) => {
   actLoading.value = true
   actError.value   = null
   try {
-    const params = { page: actPage.value, limit: LIMIT }
-    if (dateFrom.value)      params.dateFrom = dateFrom.value
-    if (dateTo.value)        params.dateTo   = dateTo.value
-    if (actTypeFilter.value) params.type     = actTypeFilter.value
-    if (actModeFilter.value) params.mode     = actModeFilter.value
+    const params = { limit: actLimit.value }
+    if (cursor)               params.cursor   = cursor
+    if (dateFrom.value)       params.dateFrom = dateFrom.value
+    if (dateTo.value)         params.dateTo   = dateTo.value
+    if (actTypeFilter.value)  params.type     = actTypeFilter.value
+    if (actModeFilter.value)  params.mode     = actModeFilter.value
+    if (actStatusFilter.value) params.status  = actStatusFilter.value
     const res = await axios.get(`${VITE_BE_URL}/data/actuator/log`, { params })
     actRows.value       = res.data.data
-    actTotal.value      = res.data.pagination.total
-    actTotalPages.value = res.data.pagination.totalPages
-  } catch (e) {
+    actNextCursor.value = res.data.pagination.nextCursor
+  } catch {
     actError.value = 'Gagal memuat log aktuator.'
   } finally {
     actLoading.value = false
   }
 }
 
+const actNext = () => {
+  if (!actNextCursor.value) return
+  actCursors.value.push(actNextCursor.value)
+  actPageIndex.value++
+  fetchActuator(actNextCursor.value)
+}
+
+const actPrev = () => {
+  if (actPageIndex.value === 0) return
+  actPageIndex.value--
+  actCursors.value.pop()
+  fetchActuator(actCursors.value[actPageIndex.value] ?? null)
+}
+
+const resetActCursor = () => {
+  actCursors.value    = [null]
+  actPageIndex.value  = 0
+  actNextCursor.value = null
+}
+
 // ── Switch tab ─────────────────────────────────────────────
 const switchTab = (tab) => {
   activeTab.value = tab
-  if (tab === 'sensor') fetchSensor()
-  if (tab === 'actuator')  fetchActuator()
+  if (tab === 'sensor')   fetchSensor()
+  if (tab === 'actuator') fetchActuator()
 }
 
 // ── Filter & reset ─────────────────────────────────────────
 const applyFilter = () => {
-  sensorPage.value = 1
-  actPage.value    = 1
+  resetSensorCursor()
+  resetActCursor()
   if (activeTab.value === 'sensor')   fetchSensor()
   if (activeTab.value === 'actuator') fetchActuator()
 }
 
 const resetFilter = () => {
-  dateFrom.value       = ''
-  dateTo.value         = ''
-  actTypeFilter.value  = ''
-  actModeFilter.value  = ''
-  sensorPage.value     = 1
-  actPage.value        = 1
+  dateFrom.value        = ''
+  dateTo.value          = ''
+  sensorPumpStatus.value = ''
+  sensorFanStatus.value  = ''
+  sensorHumStatus.value  = ''
+  actTypeFilter.value   = ''
+  actModeFilter.value   = ''
+  actStatusFilter.value = ''
+  resetSensorCursor()
+  resetActCursor()
   fetchSensor()
   fetchActuator()
 }
 
-// ── Pagination helpers ─────────────────────────────────────
-const makePagesArr = (total) => Array.from({ length: total }, (_, i) => i + 1)
-const sensorPages = computed(() => makePagesArr(sensorTotalPages.value))
-const actPages    = computed(() => makePagesArr(actTotalPages.value))
-
-const goSensor = (p) => { if (p >= 1 && p <= sensorTotalPages.value) { sensorPage.value = p } }
-const goAct    = (p) => { if (p >= 1 && p <= actTotalPages.value)    { actPage.value    = p } }
-
-watch(sensorPage, fetchSensor)
-watch(actPage,    fetchActuator)
-watch([actTypeFilter, actModeFilter], () => { actPage.value = 1; fetchActuator() })
+// ── Watch ──────────────────────────────────────────────────
+watch(sensorLimit, () => { resetSensorCursor(); fetchSensor() })
+watch(actLimit,    () => { resetActCursor();    fetchActuator() })
+watch([actTypeFilter, actModeFilter, actStatusFilter], () => { resetActCursor(); fetchActuator() })
+watch([sensorPumpStatus, sensorFanStatus, sensorHumStatus], () => { resetSensorCursor(); fetchSensor() })
 
 // ── Export query ───────────────────────────────────────────
 const exportQuery = computed(() => {
@@ -144,10 +202,6 @@ const modeClass = (m) => ({
   Timer:  'bg-purple-50 text-purple-700 border border-purple-200',
 }[m] ?? 'bg-gray-100 text-gray-400 border border-gray-200')
 
-const modeIcon = (m) => ({ Fuzzy: '🤖', Manual: '✋', Timer: '⏱' }[m] ?? '')
-
-const typeIcon = (t) => ({ pump: '💧', fan: '💨', humidifier: '🌫️' }[t] ?? '')
-
 const tempClass = (v) => v < 22 ? 'text-blue-500 font-semibold' : v <= 25 ? 'text-emerald-600 font-semibold' : 'text-red-500 font-semibold'
 const humClass  = (v) => v < 80 ? 'text-orange-400 font-semibold' : v <= 90 ? 'text-emerald-600 font-semibold' : 'text-blue-500 font-semibold'
 const soilClass = (v) => v > 2600 ? 'text-orange-400 font-semibold' : v > 1800 ? 'text-emerald-600 font-semibold' : 'text-blue-500 font-semibold'
@@ -167,32 +221,24 @@ onMounted(fetchSensor)
 
       <!-- TAB BAR -->
       <div class="flex gap-0 border-b border-gray-200 mb-4">
-        <button
-          @click="switchTab('sensor')"
-          :class="[
-            'px-5 py-2.5 text-sm font-medium border-b-2 transition -mb-px',
-            activeTab === 'sensor'
-              ? 'border-emerald-500 text-emerald-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          ]"
-        >
-          Sensor
-        </button>
-        <button
-          @click="switchTab('actuator')"
-          :class="[
-            'px-5 py-2.5 text-sm font-medium border-b-2 transition -mb-px',
-            activeTab === 'actuator'
-              ? 'border-emerald-500 text-emerald-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          ]"
-        >
-          Log Aktuator
-        </button>
+        <button @click="switchTab('sensor')" :class="[
+          'px-5 py-2.5 text-sm font-medium border-b-2 transition -mb-px',
+          activeTab === 'sensor'
+            ? 'border-emerald-500 text-emerald-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'
+        ]">Sensor</button>
+        <button @click="switchTab('actuator')" :class="[
+          'px-5 py-2.5 text-sm font-medium border-b-2 transition -mb-px',
+          activeTab === 'actuator'
+            ? 'border-emerald-500 text-emerald-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'
+        ]">Log Aktuator</button>
       </div>
 
       <!-- FILTER BAR -->
       <div class="bg-white rounded-2xl shadow-sm p-4 mb-4 flex flex-wrap gap-3 items-end">
+
+        <!-- Shared: tanggal -->
         <div class="flex flex-col gap-1">
           <label class="text-xs text-gray-500 font-medium">Dari Tanggal</label>
           <input type="date" v-model="dateFrom"
@@ -204,7 +250,35 @@ onMounted(fetchSensor)
             class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-400" />
         </div>
 
-        <!-- Filter aktuator (hanya tampil di tab aktuator) -->
+        <!-- Filter khusus tab SENSOR -->
+        <template v-if="activeTab === 'sensor'">
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-500 font-medium">Status Pump</label>
+            <select v-model="sensorPumpStatus"
+              class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-400">
+              <option value="">Semua</option>
+              <option v-for="s in STATUS_OPTIONS" :key="s" :value="s">{{ formatStatus(s) }}</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-500 font-medium">Status Fan</label>
+            <select v-model="sensorFanStatus"
+              class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-400">
+              <option value="">Semua</option>
+              <option v-for="s in STATUS_OPTIONS" :key="s" :value="s">{{ formatStatus(s) }}</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-500 font-medium">Status Humidifier</label>
+            <select v-model="sensorHumStatus"
+              class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-400">
+              <option value="">Semua</option>
+              <option v-for="s in STATUS_OPTIONS" :key="s" :value="s">{{ formatStatus(s) }}</option>
+            </select>
+          </div>
+        </template>
+
+        <!-- Filter khusus tab AKTUATOR -->
         <template v-if="activeTab === 'actuator'">
           <div class="flex flex-col gap-1">
             <label class="text-xs text-gray-500 font-medium">Aktuator</label>
@@ -214,6 +288,14 @@ onMounted(fetchSensor)
               <option value="pump">Pump</option>
               <option value="fan">Fan</option>
               <option value="humidifier">Humidifier</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-500 font-medium">Status</label>
+            <select v-model="actStatusFilter"
+              class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-400">
+              <option value="">Semua</option>
+              <option v-for="s in STATUS_OPTIONS" :key="s" :value="s">{{ formatStatus(s) }}</option>
             </select>
           </div>
           <div class="flex flex-col gap-1">
@@ -236,21 +318,21 @@ onMounted(fetchSensor)
           class="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm rounded-lg transition font-medium">
           Reset
         </button>
-        <a  v-if="activeTab === 'sensor'" :href="`${VITE_BE_URL}/data/export${exportQuery}`" target="_blank"
+        <a :href="activeTab === 'sensor'
+            ? `${VITE_BE_URL}/data/export${exportQuery}`
+            : `${VITE_BE_URL}/data/actuator-log/export${exportQuery}`"
+          target="_blank"
           class="px-4 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-sm rounded-lg transition font-medium flex items-center gap-1.5">
           Export Excel
         </a>
         <p class="ml-auto text-xs text-gray-400 self-center">
-          Total:
-          <span class="font-semibold text-gray-600">
-            {{ activeTab === 'sensor' ? sensorTotal : actTotal }} data
-          </span>
+          Halaman ke-<span class="font-semibold text-gray-600">{{
+            activeTab === 'sensor' ? sensorPageIndex + 1 : actPageIndex + 1
+          }}</span>
         </p>
       </div>
 
-      <!-- ══════════════════════════════════════════════════ -->
-      <!-- TAB SENSOR                                        -->
-      <!-- ══════════════════════════════════════════════════ -->
+      <!-- TAB SENSOR -->
       <template v-if="activeTab === 'sensor'">
         <div class="bg-white rounded-2xl shadow-sm overflow-hidden mb-4">
           <div v-if="sensorLoading" class="flex items-center justify-center py-16">
@@ -269,22 +351,40 @@ onMounted(fetchSensor)
                   <th class="px-4 py-3 text-center">Pump</th>
                   <th class="px-4 py-3 text-center">Fan</th>
                   <th class="px-4 py-3 text-center">Humidifier</th>
+                  <th class="px-4 py-3 text-center">Mode</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-50">
                 <tr v-for="row in sensorRows" :key="row.id" class="hover:bg-emerald-50/40 transition-colors">
-                  <td class="px-4 py-3 text-gray-500 whitespace-nowrap text-xs">{{ formatDate(row.date) }}</td>
-                  <td class="px-4 py-3 text-center"><span :class="tempClass(row.temperature)">{{ row.temperature.toFixed(1) }}</span></td>
-                  <td class="px-4 py-3 text-center"><span :class="humClass(row.humidity)">{{ row.humidity.toFixed(1) }}</span></td>
-                  <td class="px-4 py-3 text-center"><span :class="soilClass(row.soil)">{{ row.soil.toFixed(0) }}</span></td>
+                  <td class="px-4 py-3 text-gray-500 whitespace-nowrap text-xs">{{ formatDate(row.recordedAt) }}</td>
                   <td class="px-4 py-3 text-center">
-                    <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', statusClass(row.pump)]">{{ formatStatus(row.pump) }}</span>
+                    <span :class="tempClass(row.temperature)">{{ row.temperature.toFixed(1) }}</span>
                   </td>
                   <td class="px-4 py-3 text-center">
-                    <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', statusClass(row.fan)]">{{ formatStatus(row.fan) }}</span>
+                    <span :class="humClass(row.humidity)">{{ row.humidity.toFixed(1) }}</span>
                   </td>
                   <td class="px-4 py-3 text-center">
-                    <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', statusClass(row.humidifier)]">{{ formatStatus(row.humidifier) }}</span>
+                    <span :class="soilClass(row.soil)">{{ row.soil.toFixed(0) }}</span>
+                  </td>
+                  <td class="px-4 py-3 text-center">
+                    <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', statusClass(row.pump)]">
+                      {{ formatStatus(row.pump) }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-center">
+                    <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', statusClass(row.fan)]">
+                      {{ formatStatus(row.fan) }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-center">
+                    <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', statusClass(row.humidifier)]">
+                      {{ formatStatus(row.humidifier) }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-center">
+                    <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', modeClass(row.mode)]">
+                      {{ row.mode }}
+                    </span>
                   </td>
                 </tr>
               </tbody>
@@ -292,13 +392,18 @@ onMounted(fetchSensor)
           </div>
         </div>
 
-        <!-- Pagination Sensor -->
-        <Pagination :pages="sensorPages" :current="sensorPage" :total="sensorTotalPages" @go="goSensor" />
+        <Pagination
+          :hasPrev="sensorHasPrev"
+          :hasNext="sensorHasNext"
+          :limit="sensorLimit"
+          :limitOptions="LIMIT_OPTIONS"
+          @prev="sensorPrev"
+          @next="sensorNext"
+          @limitChange="sensorLimit = $event"
+        />
       </template>
 
-      <!-- ══════════════════════════════════════════════════ -->
-      <!-- TAB AKTUATOR LOG                                  -->
-      <!-- ══════════════════════════════════════════════════ -->
+      <!-- TAB AKTUATOR LOG -->
       <template v-if="activeTab === 'actuator'">
         <div class="bg-white rounded-2xl shadow-sm overflow-hidden mb-4">
           <div v-if="actLoading" class="flex items-center justify-center py-16">
@@ -314,17 +419,15 @@ onMounted(fetchSensor)
                   <th class="px-4 py-3 text-center">Aktuator</th>
                   <th class="px-4 py-3 text-center">Status</th>
                   <th class="px-4 py-3 text-center">Mode</th>
-                  <!-- <th class="px-4 py-3 text-center">Suhu </th>
-                  <th class="px-4 py-3 text-center">Kelembapan </th> -->
+                  <th class="px-4 py-3 text-center">Suhu (°C)</th>
+                  <th class="px-4 py-3 text-center">Kelembapan (%)</th>
+                  <th class="px-4 py-3 text-center">Substrat</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-50">
                 <tr v-for="row in actRows" :key="row.id" class="hover:bg-emerald-50/40 transition-colors">
-                  <td class="px-4 py-3 text-gray-500 whitespace-nowrap text-xs">{{ formatDate(row.date) }}</td>
-                  <td class="px-4 py-3 text-center">
-                    <span class="text-sm capitalize">{{ row.type }}</span>
-                    <!-- <span class="ml-1 text-xs font-medium text-gray-700 capitalize">{{ row.type }}</span> -->
-                  </td>
+                  <td class="px-4 py-3 text-gray-500 whitespace-nowrap text-xs">{{ formatDate(row.recordedAt) }}</td>
+                  <td class="px-4 py-3 text-center capitalize text-sm">{{ row.type }}</td>
                   <td class="px-4 py-3 text-center">
                     <span :class="['text-xs px-2 py-0.5 rounded-full font-medium', statusClass(row.status)]">
                       {{ formatStatus(row.status) }}
@@ -335,26 +438,39 @@ onMounted(fetchSensor)
                       {{ row.mode }}
                     </span>
                   </td>
-                  <!-- <td class="px-4 py-3 text-center">
-                    <span v-if="row.data" :class="tempClass(row.data.temperature)">
-                      {{ row.data.temperature.toFixed(1) }}°C
+                  <td class="px-4 py-3 text-center">
+                    <span v-if="row.temperature != null" :class="tempClass(row.temperature)">
+                      {{ row.temperature.toFixed(1) }}
                     </span>
-                    <span v-else class="text-gray-300">–</span>
+                    <span v-else class="text-gray-300">-</span>
                   </td>
                   <td class="px-4 py-3 text-center">
-                    <span v-if="row.data" :class="humClass(row.data.humidity)">
-                      {{ row.data.humidity.toFixed(1) }}%
+                    <span v-if="row.humidity != null" :class="humClass(row.humidity)">
+                      {{ row.humidity.toFixed(1) }}
                     </span>
-                    <span v-else class="text-gray-300">–</span>
-                  </td> -->
+                    <span v-else class="text-gray-300">-</span>
+                  </td>
+                  <td class="px-4 py-3 text-center">
+                    <span v-if="row.soil != null" :class="soilClass(row.soil)">
+                      {{ Math.round(row.soil) }}
+                    </span>
+                    <span v-else class="text-gray-300">-</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
           </div>
         </div>
 
-        <!-- Pagination Aktuator -->
-        <Pagination :pages="actPages" :current="actPage" :total="actTotalPages" @go="goAct" />
+        <Pagination
+          :hasPrev="actHasPrev"
+          :hasNext="actHasNext"
+          :limit="actLimit"
+          :limitOptions="LIMIT_OPTIONS"
+          @prev="actPrev"
+          @next="actNext"
+          @limitChange="actLimit = $event"
+        />
       </template>
 
     </main>

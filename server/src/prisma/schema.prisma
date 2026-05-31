@@ -1,5 +1,3 @@
-// schema.prisma
-
 generator client {
   provider = "prisma-client"
   output   = "../generated/prisma"
@@ -30,35 +28,50 @@ enum Mode {
 }
 
 model Data {
-  id           String         @id @default(uuid())
-  date         DateTime
-  temperature  Float
-  humidity     Float
-  soil         Float
-  pump         ActuatorStatus
-  fan          ActuatorStatus
-  humidifier   ActuatorStatus
-  actuatorLogs ActuatorLog[]
+  id BigInt @id @default(autoincrement())
 
+  recordedAt DateTime @default(now())
+
+  temperature Float
+  humidity    Float
+  soil        Float
+
+  pump       ActuatorStatus
+  fan        ActuatorStatus
+  humidifier ActuatorStatus
+
+  mode Mode @default(Fuzzy)
+
+  @@index([recordedAt])
+  @@index([recordedAt, id])
   @@map("data")
 }
 
 model ActuatorLog {
-  id     String         @id @default(uuid())
-  date   DateTime       @default(now())
+  id BigInt @id @default(autoincrement())
+
+  recordedAt DateTime @default(now())
+
   type   ActuatorType
   status ActuatorStatus
   mode   Mode
-  dataId String?
-  data   Data?          @relation(fields: [dataId], references: [id])
+
+  // snapshot kondisi sensor saat log dibuat
+  temperature Float?
+  humidity    Float?
+  soil        Float?
+
+  @@index([recordedAt])
+  @@index([type, recordedAt])
+  @@index([mode, recordedAt])
 
   @@map("actuator_log")
 }
 
 model ActuatorLock {
-  id        String   @id @default(uuid())
-  type      ActuatorType @unique
-  locked    Boolean  @default(false)
-  updatedAt DateTime @updatedAt
+  type      ActuatorType @id
+  locked    Boolean      @default(false)
+  updatedAt DateTime     @updatedAt
+
   @@map("actuator_lock")
 }

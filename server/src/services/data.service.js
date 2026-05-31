@@ -2,6 +2,25 @@ import { prisma } from "../config/prisma.js";
 import ExcelJS from 'exceljs'
 
 // ─────────────────────────────────────────────────────────────
+// BIGINT SERIALIZER
+// Prisma mengembalikan id bertipe BigInt. Fungsi ini mengubah
+// semua BigInt dalam objek/array menjadi string secara rekursif
+// sehingga JSON.stringify tidak melempar error.
+// ─────────────────────────────────────────────────────────────
+
+const serializeBigInt = (data) => {
+  if (data === null || data === undefined) return data
+  if (typeof data === 'bigint') return data.toString()
+  if (Array.isArray(data)) return data.map(serializeBigInt)
+  if (typeof data === 'object') {
+    return Object.fromEntries(
+      Object.entries(data).map(([k, v]) => [k, serializeBigInt(v)])
+    )
+  }
+  return data
+}
+
+// ─────────────────────────────────────────────────────────────
 // MAPPING & FUZZY
 // ─────────────────────────────────────────────────────────────
 
@@ -59,9 +78,9 @@ export const saveData = async (payload) => {
 
   // Ambil status aktuator terbaru untuk yang sedang terkunci
   const [latestPump, latestFan, latestHumidifier] = await Promise.all([
-    lockMap['pump']       ? prisma.actuatorLog.findFirst({ where: { type: 'pump' },       orderBy: { date: 'desc' } }) : null,
-    lockMap['fan']        ? prisma.actuatorLog.findFirst({ where: { type: 'fan' },        orderBy: { date: 'desc' } }) : null,
-    lockMap['humidifier'] ? prisma.actuatorLog.findFirst({ where: { type: 'humidifier' }, orderBy: { date: 'desc' } }) : null,
+    lockMap['pump']       ? prisma.actuatorLog.findFirst({ where: { type: 'pump' },       orderBy: { recordedAt: 'desc' } }) : null,
+    lockMap['fan']        ? prisma.actuatorLog.findFirst({ where: { type: 'fan' },        orderBy: { recordedAt: 'desc' } }) : null,
+    lockMap['humidifier'] ? prisma.actuatorLog.findFirst({ where: { type: 'humidifier' }, orderBy: { recordedAt: 'desc' } }) : null,
   ])
 
   // Kalau locked, pakai status terakhir. Kalau tidak, pakai hasil fuzzy
@@ -69,6 +88,7 @@ export const saveData = async (payload) => {
   const finalFan        = lockMap['fan']        ? latestFan?.status        : actuator.fan
   const finalHumidifier = lockMap['humidifier'] ? latestHumidifier?.status : actuator.humidifier
 
+  // Simpan ke Data — mode Fuzzy karena dari sensor otomatis
   const data = await prisma.data.create({
     data: {
       temperature: payload.temperature,
@@ -77,19 +97,41 @@ export const saveData = async (payload) => {
       pump:        finalPump,
       fan:         finalFan,
       humidifier:  finalHumidifier,
-      date:        new Date(),
+      mode:        lockMap['pump'] || lockMap['fan'] || lockMap['humidifier'] ? 'Manual' : 'Fuzzy',
     }
   })
 
+  // Simpan ActuatorLog dengan snapshot sensor langsung (tidak ada dataId)
   await prisma.actuatorLog.createMany({
     data: [
-      { type: 'pump',       status: finalPump,       mode: lockMap['pump']       ? 'Manual' : 'Fuzzy', dataId: data.id },
-      { type: 'fan',        status: finalFan,        mode: lockMap['fan']        ? 'Manual' : 'Fuzzy', dataId: data.id },
-      { type: 'humidifier', status: finalHumidifier, mode: lockMap['humidifier'] ? 'Manual' : 'Fuzzy', dataId: data.id },
+      {
+        type:        'pump',
+        status:      finalPump,
+        mode:        lockMap['pump']       ? 'Manual' : 'Fuzzy',
+        temperature: payload.temperature,
+        humidity:    payload.humidity,
+        soil:        payload.soil,
+      },
+      {
+        type:        'fan',
+        status:      finalFan,
+        mode:        lockMap['fan']        ? 'Manual' : 'Fuzzy',
+        temperature: payload.temperature,
+        humidity:    payload.humidity,
+        soil:        payload.soil,
+      },
+      {
+        type:        'humidifier',
+        status:      finalHumidifier,
+        mode:        lockMap['humidifier'] ? 'Manual' : 'Fuzzy',
+        temperature: payload.temperature,
+        humidity:    payload.humidity,
+        soil:        payload.soil,
+      },
     ]
   })
 
-  return data
+  return serializeBigInt(data)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -105,24 +147,23 @@ export const saveActuatorControl = async (type, status, mode = 'Manual') => {
       throw new Error(`Invalid ActuatorStatus: ${status}`)
     }
 
+    // Ambil snapshot sensor terbaru untuk dicatat di log
     const latest = await prisma.data.findFirst({
-      orderBy: { date: 'desc' }
+      orderBy: { recordedAt: 'desc' }
     })
-
-    if (!latest) {
-      throw new Error("Tidak ada data sensor untuk di-update")
-    }
 
     const data = await prisma.actuatorLog.create({
       data: {
         type,
-        status: normalized,
+        status:      normalized,
         mode,
-        dataId: latest.id,
+        temperature: latest?.temperature ?? null,
+        humidity:    latest?.humidity    ?? null,
+        soil:        latest?.soil        ?? null,
       }
     })
 
-    return data
+    return serializeBigInt(data)
   } catch (err) {
     console.error(`[ActuatorService] saveActuatorControl error:`, err)
     throw err
@@ -159,31 +200,32 @@ export const controlActuator = async (type, status) => {
     throw new Error(`Invalid ActuatorStatus: "${status}". Harus salah satu dari: ${validStatuses.join(", ")}`)
   }
 
-  // Ambil data sensor terbaru sebagai referensi
-  const latest = await prisma.data.findFirst({ orderBy: { date: "desc" } })
+  // Ambil data sensor terbaru sebagai referensi & snapshot
+  const latest = await prisma.data.findFirst({ orderBy: { recordedAt: "desc" } })
 
   // Ambil status aktuator terbaru untuk masing-masing type
   const [latestPump, latestFan, latestHumidifier] = await Promise.all([
-    prisma.actuatorLog.findFirst({ where: { type: 'pump' },       orderBy: { date: 'desc' } }),
-    prisma.actuatorLog.findFirst({ where: { type: 'fan' },        orderBy: { date: 'desc' } }),
-    prisma.actuatorLog.findFirst({ where: { type: 'humidifier' }, orderBy: { date: 'desc' } }),
+    prisma.actuatorLog.findFirst({ where: { type: 'pump' },       orderBy: { recordedAt: 'desc' } }),
+    prisma.actuatorLog.findFirst({ where: { type: 'fan' },        orderBy: { recordedAt: 'desc' } }),
+    prisma.actuatorLog.findFirst({ where: { type: 'humidifier' }, orderBy: { recordedAt: 'desc' } }),
   ])
 
-  // Susun nilai aktuator: override type yang dikontrol, sisanya pakai status terbaru
+  // Override type yang dikontrol, sisanya pakai status terbaru
   const actuatorValues = {
     pump:       normalizedType === 'pump'       ? normalizedStatus : (latestPump?.status       ?? latest?.pump       ?? 'VERYLOW'),
     fan:        normalizedType === 'fan'        ? normalizedStatus : (latestFan?.status        ?? latest?.fan        ?? 'VERYLOW'),
     humidifier: normalizedType === 'humidifier' ? normalizedStatus : (latestHumidifier?.status ?? latest?.humidifier ?? 'VERYLOW'),
   }
 
-  // Buat record Data baru + ActuatorLog + set lock dalam satu transaksi
   const [newData, log] = await prisma.$transaction(async (tx) => {
+    // Set lock untuk aktuator yang dikontrol
     await tx.actuatorLock.upsert({
       where:  { type: normalizedType },
       update: { locked: true },
       create: { type: normalizedType, locked: true },
     })
 
+    // Buat record Data baru dengan mode Manual
     const newData = await tx.data.create({
       data: {
         temperature: latest?.temperature ?? 0,
@@ -192,23 +234,26 @@ export const controlActuator = async (type, status) => {
         pump:        actuatorValues.pump,
         fan:         actuatorValues.fan,
         humidifier:  actuatorValues.humidifier,
-        date:        new Date(),
+        mode:        'Manual',
       }
     })
 
+    // Buat ActuatorLog dengan snapshot sensor (tanpa dataId)
     const log = await tx.actuatorLog.create({
       data: {
-        type:   normalizedType,
-        status: normalizedStatus,
-        mode:   "Manual",
-        dataId: newData.id,
+        type:        normalizedType,
+        status:      normalizedStatus,
+        mode:        'Manual',
+        temperature: latest?.temperature ?? null,
+        humidity:    latest?.humidity    ?? null,
+        soil:        latest?.soil        ?? null,
       }
     })
 
     return [newData, log]
   })
 
-  return { newData, log }
+  return serializeBigInt({ newData, log })
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -216,32 +261,32 @@ export const controlActuator = async (type, status) => {
 // ─────────────────────────────────────────────────────────────
 
 export const getLastData = async () => {
-  return prisma.data.findFirst({
-    orderBy: { date: 'desc' },
-    include: { actuatorLogs: { orderBy: { date: 'desc' }, take: 3 } }
+  const result = await prisma.data.findFirst({
+    orderBy: { recordedAt: 'desc' },
   })
+  return serializeBigInt(result)
 }
 
 export const getLastStatusActuator = async () => {
   const [pump, fan, humidifier] = await Promise.all([
     prisma.actuatorLog.findFirst({
       where:   { type: 'pump' },
-      orderBy: { date: 'desc' },
-      select:  { status: true, mode: true, date: true },
+      orderBy: { recordedAt: 'desc' },
+      select:  { status: true, mode: true, recordedAt: true },
     }),
     prisma.actuatorLog.findFirst({
       where:   { type: 'fan' },
-      orderBy: { date: 'desc' },
-      select:  { status: true, mode: true, date: true },
+      orderBy: { recordedAt: 'desc' },
+      select:  { status: true, mode: true, recordedAt: true },
     }),
     prisma.actuatorLog.findFirst({
       where:   { type: 'humidifier' },
-      orderBy: { date: 'desc' },
-      select:  { status: true, mode: true, date: true },
+      orderBy: { recordedAt: 'desc' },
+      select:  { status: true, mode: true, recordedAt: true },
     }),
   ])
 
-  return { pump, fan, humidifier }
+  return serializeBigInt({ pump, fan, humidifier })
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -250,13 +295,13 @@ export const getLastStatusActuator = async () => {
 
 export const getChartData = async () => {
   const rows = await prisma.data.findMany({
-    orderBy: { date: 'desc' },
+    orderBy: { recordedAt: 'desc' },
     take: 7,
   })
 
   const reversed = rows.reverse()
   return {
-    labels: reversed.map(item => new Date(item.date).getHours().toString()),
+    labels: reversed.map(item => new Date(item.recordedAt).getHours().toString()),
     temp:   reversed.map(item => item.temperature),
     hum:    reversed.map(item => item.humidity),
     soil:   reversed.map(item => item.soil),
@@ -267,35 +312,42 @@ export const getChartData = async () => {
 // GET HISTORY SENSOR (tab Sensor)
 // ─────────────────────────────────────────────────────────────
 
-export const getHistoryData = async ({ page = 1, limit = 20, dateFrom, dateTo } = {}) => {
-  const skip  = (page - 1) * limit
-  const where = buildDateWhere(dateFrom, dateTo)
+export const getHistoryData = async ({ cursor, limit = 20, dateFrom, dateTo, pump, fan, humidifier } = {}) => {
+  const dateFilter = buildDateWhere(dateFrom, dateTo)
 
-  const [rows, total] = await Promise.all([
-    prisma.data.findMany({
-      where,
-      orderBy: { date: 'desc' },
-      skip,
-      take: limit,
-      include: {
-        actuatorLogs: {
-          where:   { type: 'pump' },
-          orderBy: { date: 'desc' },
-          take: 1,
-        }
-      }
-    }),
-    prisma.data.count({ where }),
-  ])
+  const where = { ...dateFilter }
+  if (pump)       where.pump       = pump
+  if (fan)        where.fan        = fan
+  if (humidifier) where.humidifier = humidifier
 
-  const data = rows.map(row => ({
-    ...row,
-    mode: row.actuatorLogs[0]?.mode ?? '-',
-  }))
+  if (cursor) {
+    const cursorDate = new Date(cursor)
+    where.recordedAt = {
+      ...where.recordedAt,
+      lt: cursorDate,
+    }
+  }
+
+  const t1   = Date.now()
+  const rows = await prisma.data.findMany({
+    where,
+    orderBy: { recordedAt: 'desc' },
+    take: limit + 1,
+  })
+  console.log(`[getHistoryData] findMany: ${Date.now() - t1}ms | cursor: ${cursor} | rows: ${rows.length}`)
+
+  const hasNextPage = rows.length > limit
+  const data        = rows.slice(0, limit)
 
   return {
-    data,
-    pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    data: data.map(r => ({ ...r, id: r.id.toString() })),
+    pagination: {
+      limit,
+      hasNextPage,
+      // cursor berikutnya = recordedAt row terakhir (ISO string, aman di JSON)
+      nextCursor: hasNextPage ? data[data.length - 1].recordedAt.toISOString() : null,
+      prevCursor: cursor ?? null,
+    }
   }
 }
 
@@ -304,40 +356,46 @@ export const getHistoryData = async ({ page = 1, limit = 20, dateFrom, dateTo } 
 // ─────────────────────────────────────────────────────────────
 
 export const getActuatorLogHistory = async ({
-  page     = 1,
-  limit    = 20,
+  cursor,
+  limit = 20,
   type,
   mode,
+  status,
   dateFrom,
   dateTo,
 } = {}) => {
-  const skip  = (page - 1) * limit
-  const where = {}
+  const dateFilter = buildDateWhere(dateFrom, dateTo)
+  const where      = { ...dateFilter }
 
-  if (type) where.type = type
-  if (mode) where.mode = mode
+  if (type)   where.type   = type
+  if (mode)   where.mode   = mode
+  if (status) where.status = status
 
-  const dateWhere = buildDateWhere(dateFrom, dateTo)
-  if (dateWhere.date) where.date = dateWhere.date
+  if (cursor) {
+    const cursorDate = new Date(cursor)
+    where.recordedAt = {
+      ...where.recordedAt,
+      lt: cursorDate,
+    }
+  }
 
-  const [rows, total] = await Promise.all([
-    prisma.actuatorLog.findMany({
-      where,
-      orderBy: { date: 'desc' },
-      skip,
-      take: limit,
-      include: {
-        data: {
-          select: { temperature: true, humidity: true, soil: true }
-        }
-      }
-    }),
-    prisma.actuatorLog.count({ where }),
-  ])
+  const rows = await prisma.actuatorLog.findMany({
+    where,
+    orderBy: { recordedAt: 'desc' },
+    take: limit + 1,
+  })
+
+  const hasNextPage = rows.length > limit
+  const data        = rows.slice(0, limit)
 
   return {
-    data: rows,
-    pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    data: data.map(r => ({ ...r, id: r.id.toString() })),
+    pagination: {
+      limit,
+      hasNextPage,
+      nextCursor: hasNextPage ? data[data.length - 1].recordedAt.toISOString() : null,
+      prevCursor: cursor ?? null,
+    }
   }
 }
 
@@ -348,13 +406,12 @@ export const getActuatorLogHistory = async ({
 export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
   const where    = buildDateWhere(dateFrom, dateTo)
   const actWhere = {}
-  if (where.date) actWhere.date = where.date
+  if (where.recordedAt) actWhere.recordedAt = where.recordedAt
 
   const fileName = `history_jamur_${Date.now()}.xlsx`
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
 
-  // Gunakan WorkbookWriter (streaming) agar tiap row langsung dikirim ke client
   const workbook   = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res })
   workbook.creator = 'Sistem Monitoring Jamur Kuping'
   workbook.created = new Date()
@@ -373,10 +430,11 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
     { key: 'pump',        width: 12 },
     { key: 'fan',         width: 12 },
     { key: 'humidifier',  width: 14 },
+    { key: 'mode',        width: 12 },
   ]
 
   addSheetTitleStream(sheetSensor, 'RIWAYAT DATA SENSOR JAMUR KUPING', dateFrom, dateTo)
-  styleHeaderStream(sheetSensor.addRow(['No', 'Waktu', 'Suhu (°C)', 'Kelembapan (%)', 'Substrat', 'Pump', 'Fan', 'Humidifier']), '2D6A4F')
+  styleHeaderStream(sheetSensor.addRow(['No', 'Waktu', 'Suhu (°C)', 'Kelembapan (%)', 'Substrat', 'Pump', 'Fan', 'Humidifier', 'Mode']), '2D6A4F')
 
   const BATCH = 1000
   let skip = 0
@@ -385,7 +443,7 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
   while (true) {
     const rows = await prisma.data.findMany({
       where,
-      orderBy: { date: 'desc' },
+      orderBy: { recordedAt: 'desc' },
       skip,
       take: BATCH,
     })
@@ -394,13 +452,14 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
     for (const row of rows) {
       const dr = sheetSensor.addRow({
         no:          ++idx,
-        date:        fmtDate(row.date),
+        date:        fmtDate(row.recordedAt),
         temperature: +row.temperature.toFixed(1),
         humidity:    +row.humidity.toFixed(1),
         soil:        Math.round(row.soil),
         pump:        row.pump,
         fan:         row.fan,
         humidifier:  row.humidifier,
+        mode:        row.mode,
       })
       styleDataRowStream(dr, idx, row)
       dr.commit()
@@ -425,10 +484,11 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
     { key: 'mode',   width: 12 },
     { key: 'temp',   width: 12 },
     { key: 'hum',    width: 14 },
+    { key: 'soil',   width: 14 },
   ]
 
   addSheetTitleStream(sheetAct, 'LOG AKTUATOR JAMUR KUPING', dateFrom, dateTo)
-  styleHeaderStream(sheetAct.addRow(['No', 'Waktu', 'Aktuator', 'Status', 'Mode', 'Suhu (°C)', 'Kelembapan (%)']), '1B4F72')
+  styleHeaderStream(sheetAct.addRow(['No', 'Waktu', 'Aktuator', 'Status', 'Mode', 'Suhu (°C)', 'Kelembapan (%)', 'Substrat']), '1B4F72')
 
   skip = 0
   idx  = 0
@@ -436,12 +496,9 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
   while (true) {
     const rows = await prisma.actuatorLog.findMany({
       where:   actWhere,
-      orderBy: { date: 'desc' },
+      orderBy: { recordedAt: 'desc' },
       skip,
       take: BATCH,
-      include: {
-        data: { select: { temperature: true, humidity: true } }
-      }
     })
     if (rows.length === 0) break
 
@@ -449,12 +506,13 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
       const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFEBf5FB'
       const dr = sheetAct.addRow({
         no:     ++idx,
-        date:   fmtDate(row.date),
+        date:   fmtDate(row.recordedAt),
         type:   row.type,
         status: row.status,
         mode:   row.mode,
-        temp:   row.data ? +row.data.temperature.toFixed(1) : '-',
-        hum:    row.data ? +row.data.humidity.toFixed(1)    : '-',
+        temp:   row.temperature != null ? +row.temperature.toFixed(1) : '-',
+        hum:    row.humidity    != null ? +row.humidity.toFixed(1)    : '-',
+        soil:   row.soil        != null ? Math.round(row.soil)        : '-',
       })
 
       dr.eachCell((cell, col) => {
@@ -488,23 +546,22 @@ export const exportHistoryToExcel = async ({ dateFrom, dateTo } = {}, res) => {
 const buildDateWhere = (dateFrom, dateTo) => {
   const where = {}
   if (dateFrom || dateTo) {
-    where.date = {}
+    where.recordedAt = {}
     if (dateFrom) {
       const start = new Date(dateFrom)
       start.setUTCHours(0, 0, 0, 0)
-      start.setTime(start.getTime() - (7 * 60 * 60 * 1000)) // mundur 7 jam → 17:00 UTC hari sebelumnya = 00:00 WIB
-      where.date.gte = start
+      start.setTime(start.getTime() - (7 * 60 * 60 * 1000))
+      where.recordedAt.gte = start
     }
     if (dateTo) {
       const end = new Date(dateTo)
       end.setUTCHours(0, 0, 0, 0)
-      end.setTime(end.getTime() + (17 * 60 * 60 * 1000) - 1) // +17 jam → 16:59:59 UTC = 23:59:59 WIB
-      where.date.lte = end
+      end.setTime(end.getTime() + (17 * 60 * 60 * 1000) - 1)
+      where.recordedAt.lte = end
     }
   }
   return where
 }
-
 
 const fmtDate = (d) =>
   new Date(d).toLocaleString('id-ID', {
@@ -512,7 +569,6 @@ const fmtDate = (d) =>
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
 
-// Helper untuk streaming worksheet (tidak bisa mergeCells di streaming mode)
 const addSheetTitleStream = (sheet, title, dateFrom, dateTo) => {
   const titleRow       = sheet.addRow([title])
   titleRow.font        = { bold: true, size: 14 }
@@ -552,12 +608,16 @@ const styleDataRowStream = (dataRow, idx, row) => {
     cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } }
     cell.alignment = { horizontal: 'center', vertical: 'middle' }
     cell.border    = { bottom: { style: 'hair', color: { argb: 'FFD1FAE5' } } }
-    if (col === 3) cell.font = { bold: true, color: { argb: tempColor(row.temperature) },          size: 10 }
-    if (col === 4) cell.font = { bold: true, color: { argb: humColor(row.humidity) },               size: 10 }
-    if (col === 5) cell.font = { bold: true, color: { argb: soilColor(row.soil) },                  size: 10 }
-    if (col === 6) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.pump) },        size: 10 }
-    if (col === 7) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.fan) },         size: 10 }
-    if (col === 8) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.humidifier) },  size: 10 }
+    if (col === 3) cell.font = { bold: true, color: { argb: tempColor(row.temperature) },         size: 10 }
+    if (col === 4) cell.font = { bold: true, color: { argb: humColor(row.humidity) },              size: 10 }
+    if (col === 5) cell.font = { bold: true, color: { argb: soilColor(row.soil) },                 size: 10 }
+    if (col === 6) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.pump) },       size: 10 }
+    if (col === 7) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.fan) },        size: 10 }
+    if (col === 8) cell.font = { bold: true, color: { argb: actuatorStatusColor(row.humidifier) }, size: 10 }
+    if (col === 9) {
+      const modeColor = row.mode === 'Manual' ? 'FF854F0B' : row.mode === 'Timer' ? 'FF534AB7' : 'FF0C447C'
+      cell.font = { bold: true, color: { argb: modeColor }, size: 10 }
+    }
   })
   dataRow.height = 20
 }
@@ -575,4 +635,97 @@ const actuatorStatusColor = (v) => {
     VERYHIGH: 'FFEF4444',
   }
   return map[v] ?? 'FF9CA3AF'
+}
+
+// ─────────────────────────────────────────────────────────────
+// EXPORT EXCEL — Log Aktuator (streaming per batch)
+// ─────────────────────────────────────────────────────────────
+
+export const exportActuatorLogToExcel = async ({ type, mode, dateFrom, dateTo } = {}, res) => {
+  const where = {}
+
+  if (type) where.type = type
+  if (mode) where.mode = mode
+
+  const dateWhere = buildDateWhere(dateFrom, dateTo)
+  if (dateWhere.recordedAt) where.recordedAt = dateWhere.recordedAt
+
+  const fileName = `log_aktuator_${Date.now()}.xlsx`
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
+
+  const workbook   = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res })
+  workbook.creator = 'Sistem Monitoring Jamur Kuping'
+  workbook.created = new Date()
+
+  const sheet = workbook.addWorksheet('Log Aktuator', {
+    pageSetup: { fitToPage: true, orientation: 'landscape' },
+  })
+
+  sheet.columns = [
+    { key: 'no',     width: 6  },
+    { key: 'date',   width: 22 },
+    { key: 'type',   width: 14 },
+    { key: 'status', width: 14 },
+    { key: 'mode',   width: 12 },
+    { key: 'temp',   width: 14 },
+    { key: 'hum',    width: 16 },
+    { key: 'soil',   width: 14 },
+  ]
+
+  addSheetTitleStream(sheet, 'LOG AKTUATOR JAMUR KUPING', dateFrom, dateTo)
+  styleHeaderStream(
+    sheet.addRow(['No', 'Waktu', 'Aktuator', 'Status', 'Mode', 'Suhu (°C)', 'Kelembapan (%)', 'Substrat']),
+    '1B4F72'
+  )
+
+  const BATCH = 1000
+  let skip = 0
+  let idx  = 0
+
+  while (true) {
+    const rows = await prisma.actuatorLog.findMany({
+      where,
+      orderBy: { recordedAt: 'desc' },
+      skip,
+      take: BATCH,
+    })
+    if (rows.length === 0) break
+
+    for (const row of rows) {
+      const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFEBf5FB'
+      const dr = sheet.addRow({
+        no:     ++idx,
+        date:   fmtDate(row.recordedAt),
+        type:   row.type,
+        status: row.status,
+        mode:   row.mode,
+        temp:   row.temperature != null ? +row.temperature.toFixed(1) : '-',
+        hum:    row.humidity    != null ? +row.humidity.toFixed(1)    : '-',
+        soil:   row.soil        != null ? Math.round(row.soil)        : '-',
+      })
+
+      dr.eachCell((cell, col) => {
+        cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } }
+        cell.alignment = { horizontal: 'center', vertical: 'middle' }
+        cell.border    = { bottom: { style: 'hair', color: { argb: 'FFD1ECF1' } } }
+
+        if (col === 4) {
+          cell.font = { bold: true, color: { argb: actuatorStatusColor(row.status) }, size: 10 }
+        }
+        if (col === 5) {
+          const modeColor = row.mode === 'Manual' ? 'FF854F0B' : row.mode === 'Timer' ? 'FF534AB7' : 'FF0C447C'
+          cell.font = { bold: true, color: { argb: modeColor }, size: 10 }
+        }
+      })
+
+      dr.commit()
+    }
+
+    skip += BATCH
+    if (rows.length < BATCH) break
+  }
+
+  await sheet.commit()
+  await workbook.commit()
 }

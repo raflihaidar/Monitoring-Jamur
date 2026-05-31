@@ -51,18 +51,16 @@ const fuzzyRule = (soil_state, temp_state, hum_state) => {
 // ============================================================
 
 const makeWibDate = (dateStr, hourWib, min, sec) => {
-  const pad    = n => String(n).padStart(2, '0')
+  const pad     = n => String(n).padStart(2, '0')
   const hourUtc = hourWib - 7
 
   if (hourUtc >= 0) {
-    // Jam UTC masih di hari yang sama dengan dateStr
     return new Date(`${dateStr}T${pad(hourUtc)}:${pad(min)}:${pad(sec)}.000Z`)
   } else {
-    // Jam UTC pindah ke hari sebelumnya (hourWib 00:00–06:59 WIB)
     const prev = new Date(`${dateStr}T00:00:00.000Z`)
     prev.setUTCDate(prev.getUTCDate() - 1)
     const prevDateStr = prev.toISOString().slice(0, 10)
-    const hourUtcAdj  = hourUtc + 24 // misal -3 → 21
+    const hourUtcAdj  = hourUtc + 24
     return new Date(`${prevDateStr}T${pad(hourUtcAdj)}:${pad(min)}:${pad(sec)}.000Z`)
   }
 }
@@ -71,10 +69,16 @@ const makeWibDate = (dateStr, hourWib, min, sec) => {
 // Generate Data Per Hari
 // Interval    : 5 detik → 17280 slot/hari
 // startHourWib: jam mulai dalam WIB (default 0 = 00:00 WIB)
+// Timer pump  : jam 07:00:00–07:00:10 WIB (2 slot @ 5 detik)
 // ============================================================
 
+const TIMER_PUMP_STATUS = 'HIGH'    // status pump saat timer aktif
+const TIMER_DURATION_SEC = 10       // durasi timer dalam detik
+const TIMER_HOUR_WIB     = 7        // jam timer dalam WIB
+
 const generateDayRecords = (dateStr, startHourWib = 0) => {
-  const records = []
+  const records     = []
+  const timerSlots  = []
 
   let spikeCount  = 0
   let spikeActive = false
@@ -84,6 +88,14 @@ const generateDayRecords = (dateStr, startHourWib = 0) => {
   const INTERVAL_SECONDS = 5
   const TOTAL_SLOTS      = (24 * 60 * 60) / INTERVAL_SECONDS // 17280
   const START_SLOT       = (startHourWib * 3600) / INTERVAL_SECONDS
+
+  // Hitung slot mana saja yang masuk window timer jam 07:00 WIB
+  const timerStartSec = TIMER_HOUR_WIB * 3600
+  const timerEndSec   = timerStartSec + TIMER_DURATION_SEC
+  for (let s = timerStartSec; s < timerEndSec; s += INTERVAL_SECONDS) {
+    timerSlots.push(Math.floor(s / INTERVAL_SECONDS))
+  }
+  const timerSlotSet = new Set(timerSlots)
 
   for (let slot = START_SLOT; slot < TOTAL_SLOTS; slot++) {
     const totalSeconds = slot * INTERVAL_SECONDS
@@ -124,9 +136,25 @@ const generateDayRecords = (dateStr, startHourWib = 0) => {
     lastSoil    = soil
 
     const { temp_state, hum_state, soil_state } = mappingState(temperature, humidity, soil)
-    const { pump, fan, humidifier }             = fuzzyRule(soil_state, temp_state, hum_state)
+    const fuzzy = fuzzyRule(soil_state, temp_state, hum_state)
 
-    records.push({ date: dt, temperature, humidity, soil, pump, fan, humidifier })
+    // ── Timer pump override jam 07:00 WIB ─────────────────
+    const isTimerSlot = timerSlotSet.has(slot)
+    const pump        = isTimerSlot ? TIMER_PUMP_STATUS : fuzzy.pump
+    const pumpMode    = isTimerSlot ? 'Timer' : 'Fuzzy'
+
+    records.push({
+      recordedAt:  dt,
+      temperature,
+      humidity,
+      soil,
+      pump,
+      fan:         fuzzy.fan,
+      humidifier:  fuzzy.humidifier,
+      // mode di tabel Data: Timer kalau ada aktuator timer aktif, Fuzzy kalau tidak
+      dataMode:    isTimerSlot ? 'Timer' : 'Fuzzy',
+      pumpMode,
+    })
   }
 
   return records
@@ -169,8 +197,8 @@ const seed = async () => {
 
   // ── Hapus data lama ────────────────────────────────────────
   console.log("🗑  Menghapus data lama...")
-  const delAct  = await prisma.actuatorLog.deleteMany({ where: { date: { gte: START_DATE, lte: END_DATE } } })
-  const delData = await prisma.data.deleteMany({ where: { date: { gte: START_DATE, lte: END_DATE } } })
+  const delAct  = await prisma.actuatorLog.deleteMany({ where: { recordedAt: { gte: START_DATE, lte: END_DATE } } })
+  const delData = await prisma.data.deleteMany({ where: { recordedAt: { gte: START_DATE, lte: END_DATE } } })
   console.log(`   ActuatorLog deleted : ${delAct.count}`)
   console.log(`   Data deleted        : ${delData.count}`)
 
@@ -185,44 +213,59 @@ const seed = async () => {
     const startHourWib = i === 0 ? 10 : 0
 
     const records = generateDayRecords(dateStr, startHourWib)
-      .filter(r => r.date >= START_DATE && r.date <= END_DATE)
+      .filter(r => r.recordedAt >= START_DATE && r.recordedAt <= END_DATE)
 
     for (let j = 0; j < records.length; j += BATCH_SIZE) {
       const batch = records.slice(j, j + BATCH_SIZE)
 
-      // 1. Insert Data batch sekaligus
+      // 1. Insert Data batch — mode dari field dataMode per record
       await prisma.data.createMany({
         data: batch.map(r => ({
-          date:        r.date,
+          recordedAt:  r.recordedAt,
           temperature: r.temperature,
           humidity:    r.humidity,
           soil:        r.soil,
           pump:        r.pump,
           fan:         r.fan,
           humidifier:  r.humidifier,
+          mode:        r.dataMode,
         }))
       })
 
-      // 2. Ambil id record yang baru diinsert berdasarkan range tanggal batch
-      const firstDate = batch[0].date
-      const lastDate  = batch[batch.length - 1].date
-
-      const inserted = await prisma.data.findMany({
-        where:   { date: { gte: firstDate, lte: lastDate } },
-        select:  { id: true, pump: true, fan: true, humidifier: true },
-        orderBy: { date: 'asc' },
-      })
-
-      // 3. Insert ActuatorLog batch
-      const logPayload = inserted.flatMap(d => [
-        { type: 'pump',       status: d.pump,       mode: 'Fuzzy', dataId: d.id },
-        { type: 'fan',        status: d.fan,        mode: 'Fuzzy', dataId: d.id },
-        { type: 'humidifier', status: d.humidifier, mode: 'Fuzzy', dataId: d.id },
+      // 2. Insert ActuatorLog batch — pump pakai pumpMode (bisa Timer), fan & humidifier Fuzzy
+      const logPayload = batch.flatMap(r => [
+        {
+          recordedAt:  r.recordedAt,
+          type:        'pump',
+          status:      r.pump,
+          mode:        r.pumpMode,   // 'Timer' di slot jam 07:00, 'Fuzzy' lainnya
+          temperature: r.temperature,
+          humidity:    r.humidity,
+          soil:        r.soil,
+        },
+        {
+          recordedAt:  r.recordedAt,
+          type:        'fan',
+          status:      r.fan,
+          mode:        'Fuzzy',
+          temperature: r.temperature,
+          humidity:    r.humidity,
+          soil:        r.soil,
+        },
+        {
+          recordedAt:  r.recordedAt,
+          type:        'humidifier',
+          status:      r.humidifier,
+          mode:        'Fuzzy',
+          temperature: r.temperature,
+          humidity:    r.humidity,
+          soil:        r.soil,
+        },
       ])
 
       await prisma.actuatorLog.createMany({ data: logPayload })
 
-      totalData += inserted.length
+      totalData += batch.length
       totalLogs += logPayload.length
     }
 
@@ -247,15 +290,15 @@ const seed = async () => {
       ROUND(AVG(humidity), 1)                            AS avg_hum,
       SUM(CASE WHEN humidity < 80 THEN 1 ELSE 0 END)     AS low_hum_count
     FROM \`data\`
-    WHERE date >= ${START_DATE}
-    AND   date <= ${END_DATE}
+    WHERE recordedAt >= ${START_DATE}
+    AND   recordedAt <= ${END_DATE}
   `
 
   const logStats = await prisma.$queryRaw`
     SELECT mode, COUNT(*) AS total
     FROM actuator_log
-    WHERE date >= ${START_DATE}
-    AND   date <= ${END_DATE}
+    WHERE recordedAt >= ${START_DATE}
+    AND   recordedAt <= ${END_DATE}
     GROUP BY mode
   `
 

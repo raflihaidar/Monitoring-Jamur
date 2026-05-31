@@ -1,38 +1,44 @@
 <script setup>
 defineProps({
-  pages:   { type: Array,  required: true },
-  current: { type: Number, required: true },
-  total:   { type: Number, required: true },
+  hasPrev:     { type: Boolean, required: true },
+  hasNext:     { type: Boolean, required: true },
+  limit:       { type: Number,  required: true },
+  limitOptions:{ type: Array,   default: () => [15, 30, 50, 100] },
 })
-const emit = defineEmits(['go'])
+const emit = defineEmits(['prev', 'next', 'limitChange'])
 </script>
 
 <template>
-  <div v-if="total > 1" class="flex justify-center items-center gap-1 pb-4">
-    <button @click="emit('go', current - 1)" :disabled="current === 1"
-      class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition">
-      ← Prev
-    </button>
+  <div class="flex justify-between items-center pb-4 px-1">
+    <!-- Limit selector -->
+    <div class="flex items-center gap-2">
+      <span class="text-xs text-gray-400">Tampilkan</span>
+      <select
+        :value="limit"
+        @change="emit('limitChange', parseInt($event.target.value))"
+        class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-white text-gray-600"
+      >
+        <option v-for="opt in limitOptions" :key="opt" :value="opt">{{ opt }}</option>
+      </select>
+      <span class="text-xs text-gray-400">baris</span>
+    </div>
 
-    <template v-for="p in pages" :key="p">
-      <span v-if="p === 2 && current > 4" class="px-1 text-gray-400 text-xs">…</span>
+    <!-- Prev / Next -->
+    <div class="flex items-center gap-2">
       <button
-        v-if="p === 1 || p === total || (p >= current - 2 && p <= current + 2)"
-        @click="emit('go', p)"
-        :class="[
-          'px-3 py-1.5 text-xs rounded-lg border transition font-medium',
-          p === current
-            ? 'bg-emerald-500 border-emerald-500 text-white'
-            : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-        ]">
-        {{ p }}
+        @click="emit('prev')"
+        :disabled="!hasPrev"
+        class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+      >
+        ← Prev
       </button>
-      <span v-if="p === total - 1 && current < total - 3" class="px-1 text-gray-400 text-xs">…</span>
-    </template>
-
-    <button @click="emit('go', current + 1)" :disabled="current === total"
-      class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition">
-      Next →
-    </button>
+      <button
+        @click="emit('next')"
+        :disabled="!hasNext"
+        class="px-3 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+      >
+        Next →
+      </button>
+    </div>
   </div>
 </template>
