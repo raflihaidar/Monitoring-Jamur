@@ -301,7 +301,11 @@ export const getChartData = async () => {
 
   const reversed = rows.reverse()
   return {
-    labels: reversed.map(item => new Date(item.recordedAt).getHours().toString()),
+    labels: reversed.map(item => {
+      // Konversi UTC → WIB (+7) untuk label jam
+      const hourWib = (new Date(item.recordedAt).getUTCHours() + 7) % 24
+      return hourWib.toString()
+    }),
     temp:   reversed.map(item => item.temperature),
     hum:    reversed.map(item => item.humidity),
     soil:   reversed.map(item => item.soil),
@@ -565,6 +569,7 @@ const buildDateWhere = (dateFrom, dateTo) => {
 
 const fmtDate = (d) =>
   new Date(d).toLocaleString('id-ID', {
+    timeZone: 'Asia/Jakarta',
     day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
